@@ -31,11 +31,14 @@ export class CacheService {
         const query = (params.query || "").trim().toLowerCase();
         const filter = params.filterType || "all";
         const offset = params.offset || 0;
+        const limit = params.limit || 25;
         const authors = params.authorIds && params.authorIds.length > 0 
             ? `authors:${[...params.authorIds].sort().join(",")}` 
             : (params.authorId ? `author:${params.authorId}` : "any_author");
+        const before = params.beforeDate || "";
+        const after = params.afterDate || "";
 
-        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|o:${offset}`;
+        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|before:${before}|after:${after}|o:${offset}|l:${limit}`;
     }
 
     /**
@@ -94,9 +97,17 @@ export class CacheService {
      * Deduplicate a list of media items based on unique media ID
      */
     public static deduplicateItems(existingItems: MediaItem[], newItems: MediaItem[]): MediaItem[] {
-        const seenIds = new Set(existingItems.map(item => item.id));
-        const uniqueNew = newItems.filter(item => !seenIds.has(item.id));
-        return [...existingItems, ...uniqueNew];
+        const seenIds = new Set<string>();
+        const result: MediaItem[] = [];
+
+        for (const item of [...existingItems, ...newItems]) {
+            const dedupeKey = item.id || `${item.messageId}:${item.url}`;
+            if (seenIds.has(dedupeKey)) continue;
+            seenIds.add(dedupeKey);
+            result.push(item);
+        }
+
+        return result;
     }
 
     /**

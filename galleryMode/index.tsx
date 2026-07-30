@@ -37,11 +37,13 @@ export function useGalleryActive() {
     return active;
 }
 
-// Header button wrapper component with crash protection
-export function HeaderButtonWrapper() {
+// Header button wrapper component with crash protection. The patch replaces Discord's
+// trailing header Fragment with this component, so we must preserve props.children.
+export function HeaderButtonWrapper({ children }: { children?: React.ReactNode; }) {
     const active = useGalleryActive();
     return (
         <>
+            {children}
             <GalleryHeaderButton
                 active={active}
                 onToggle={() => setGalleryActive(!active)}
@@ -78,7 +80,7 @@ export default definePlugin({
     ],
 
     // Wrapped in Vencord's ErrorBoundary to guarantee zero startup crashes
-    renderHeaderButton: ErrorBoundary.wrap(() => <HeaderButtonWrapper key="gallery-mode-header-btn" />, { noop: true }),
+    renderHeaderButton: ErrorBoundary.wrap((props: any) => <HeaderButtonWrapper {...props} key="gallery-mode-header-btn" />, { noop: true }),
 
     start() {
         console.log("[GalleryMode] Plugin successfully initialized.");
