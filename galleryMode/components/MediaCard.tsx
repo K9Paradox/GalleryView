@@ -37,8 +37,28 @@ function avatarUrl(item: MediaItem) {
     return `https://cdn.discordapp.com/avatars/${item.author.id}/${avatar}.${ext}?size=64`;
 }
 
+function isCspSafeMediaUrl(url?: string): url is string {
+    if (!url) return false;
+    if (url.startsWith("blob:") || url.startsWith("data:")) return true;
+
+    try {
+        const host = new URL(url).hostname.toLowerCase();
+        return host === "cdn.discordapp.com" || host === "media.discordapp.net" || host.endsWith(".discordapp.net");
+    } catch {
+        return false;
+    }
+}
+
+function firstSafeMediaUrl(...urls: Array<string | undefined>) {
+    return urls.find(isCspSafeMediaUrl);
+}
+
+function isLikelyImageUrl(url?: string) {
+    return !!url && /\.(png|jpe?g|webp|gif|avif|bmp)(\?|$)/i.test(url);
+}
+
 function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: any; }) {
-    const src = item.proxyUrl || item.url;
+    const src = firstSafeMediaUrl(item.proxyUrl, item.url);
     const title = item.filename || item.embedTitle || "Media Preview";
 
     return (
@@ -48,9 +68,9 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
                 <ModalCloseButton onClick={modalProps.onClose} />
             </ModalHeader>
             <ModalContent className="gm-modal-content">
-                {item.type === "video" ? (
-                    <video className="gm-modal-media" src={src} poster={item.thumbnailUrl} controls autoPlay playsInline />
-                ) : item.type === "audio" ? (
+                {item.type === "video" && src ? (
+                    <video className="gm-modal-media" src={src} poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined} controls autoPlay playsInline />
+                ) : item.type === "audio" && src ? (
                     <div className="gm-modal-file-shell">
                         <div className="gm-modal-file-icon">🎵</div>
                         <div className="gm-modal-file-name">{title}</div>
@@ -62,8 +82,14 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
                         <div className="gm-modal-file-name">{title}</div>
                         <div className="gm-modal-file-meta">{item.fileExtension || "FILE"}{item.fileSize ? ` • ${formatSize(item.fileSize)}` : ""}</div>
                     </div>
-                ) : (
+                ) : src ? (
                     <img className="gm-modal-media" src={src} alt={title} />
+                ) : (
+                    <div className="gm-modal-file-shell">
+                        <div className="gm-modal-file-icon">↗️</div>
+                        <div className="gm-modal-file-name">External preview blocked by Discord CSP</div>
+                        <div className="gm-modal-file-meta">Open the original link to view this media.</div>
+                    </div>
                 )}
                 <div className="gm-modal-actions">
                     <button className="gm-action-btn primary" onClick={() => copyWithToast(item.url, "Copied media link!")}>Copy Link</button>
@@ -106,9 +132,9 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
     };
 
     const handleCardClick = () => {
-        const previewUrl = item.proxyUrl || item.url;
+        const previewUrl = firstSafeMediaUrl(item.proxyUrl, item.url);
 
-        if (item.type === "image" || item.type === "gif" || item.type === "embed") {
+        if ((item.type === "image" || item.type === "gif" || item.type === "embed") && previewUrl) {
             try {
                 openImageModal(previewUrl, {
                     original: item.url,
@@ -119,6 +145,11 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
             } catch (err) {
                 console.warn("[GalleryMode] Discord image modal failed; falling back to custom media modal.", err);
             }
+        }
+
+        if (!previewUrl && item.type !== "file") {
+            window.open(item.url, "_blank");
+            return;
         }
 
         openModal((modalProps: any) => <MediaViewerModal item={item} modalProps={modalProps} />);
@@ -147,7 +178,8 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
         }
     };
 
-    const displaySrc = item.thumbnailUrl || item.proxyUrl || item.url;
+    const displaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+    const videoSrc = item.type === "video" ? firstSafeMediaUrl(item.proxyUrl, item.url) : undefined;
     const typeLabel = (item.type || "file").toUpperCase();
     const avatar = avatarUrl(item);
 
@@ -181,7 +213,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                         <div className="gm-file-name-text">Preview Unavailable</div>
                         <div className="gm-file-size-badge">Click to open the original media</div>
                     </div>
-                ) : item.type === "video" ? (
+                ) : item.type === "video" && videoSrc ? (
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
                         {!mediaLoaded && (
                             <div className="gm-media-skeleton">
@@ -189,12 +221,13 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                             </div>
                         )}
                         <video
-                            src={item.proxyUrl || item.url}
-                            poster={item.thumbnailUrl !== item.url ? item.thumbnailUrl : undefined}
+                            src={videoSrc}
+                            poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
                             preload="metadata"
                             muted
                             playsInline
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
+                            onLoadedMetadata={() => setMediaLoaded(true)}
                             onLoadedData={() => setMediaLoaded(true)}
                             onCanPlay={() => setMediaLoaded(true)}
                             onError={() => {
@@ -205,6 +238,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                         <div className="gm-video-play-overlay">
                             <div className="gm-play-button-circle">▶</div>
                         </div>
+                    </div>
+                ) : !displaySrc ? (
+                    <div className="gm-file-card-preview">
+                        <div className="gm-file-icon-circle">↗️</div>
+                        <div className="gm-file-name-text">External Preview</div>
+                        <div className="gm-file-size-badge">Click to open original</div>
                     </div>
                 ) : (
                     <>

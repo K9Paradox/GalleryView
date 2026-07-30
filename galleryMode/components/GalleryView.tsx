@@ -215,8 +215,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 setError("Discord Search is rate limited right now. Wait a few seconds, then retry.");
             } else if (err?.status === 403) {
                 setError("Discord denied access to search this channel/server. Check your permissions.");
+            } else if (err?.body?.code === 50024) {
+                setError("Discord cannot search this channel surface directly. Try the server scope or select a normal text/thread channel.");
             } else {
-                setError(err?.message || "Failed to fetch gallery media from Discord Search.");
+                setError(err?.body?.message || err?.message || "Failed to fetch gallery media from Discord Search.");
             }
         } finally {
             if (requestId === latestRequestRef.current) {

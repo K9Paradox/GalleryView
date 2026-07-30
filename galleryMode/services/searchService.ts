@@ -137,14 +137,19 @@ export class SearchService {
             has: hasType
         };
 
-        if (params.channelId && (!params.channelIds || params.channelIds.length === 0)) {
-            endpoint = `/channels/${params.channelId}/messages/search`;
-        } else if (params.guildId) {
+        if (params.guildId) {
+            // Use the guild search endpoint for every guild-backed channel search.
+            // Discord returns 400 / code 50024 for /channels/:id/messages/search on
+            // forum/media/thread and some announcement-like channel surfaces, while the
+            // guild endpoint accepts channel_id filtering for the same target.
             endpoint = `/guilds/${params.guildId}/messages/search`;
             if (params.channelIds?.length) {
                 queryParams.channel_id = params.channelIds.length === 1 ? params.channelIds[0] : params.channelIds;
+            } else if (params.channelId) {
+                queryParams.channel_id = params.channelId;
             }
         } else if (params.channelId) {
+            // DM and group DM searches do not have a guild endpoint.
             endpoint = `/channels/${params.channelId}/messages/search`;
         } else {
             throw new Error("No target channel or guild specified for media search.");
@@ -244,7 +249,7 @@ export class SearchService {
                         guildId: msg.guild_id || params.guildId,
                         url: att.url,
                         proxyUrl: att.proxy_url || att.url,
-                        thumbnailUrl: att.proxy_url || att.url,
+                        thumbnailUrl: detectedType === "image" || detectedType === "gif" ? (att.proxy_url || att.url) : undefined,
                         filename: att.filename,
                         type: detectedType,
                         fileExtension: ext,
@@ -264,8 +269,12 @@ export class SearchService {
                     const detectedType = this.categorizeEmbed(embed);
                     if (!detectedType || !this.matchesRequestedType(detectedType, params.filterType)) continue;
 
-                    const mediaUrl = embed.image?.url || embed.video?.url || embed.thumbnail?.url || embed.url;
-                    if (!mediaUrl) continue;
+                    const rawMediaUrl = embed.image?.url || embed.video?.url || embed.thumbnail?.url || embed.url;
+                    if (!rawMediaUrl) continue;
+                    const mediaUrl = this.normaliseExternalMediaUrl(rawMediaUrl);
+
+                    const safeProxyUrl = this.safePreviewUrl(embed.image?.proxy_url || embed.video?.proxy_url || embed.thumbnail?.proxy_url);
+                    const safeThumbnailUrl = this.safePreviewUrl(embed.thumbnail?.proxy_url || embed.image?.proxy_url);
 
                     extractedItems.push({
                         id: `emb_${msg.id}_${index}_${this.stableHash(mediaUrl)}`,
@@ -273,8 +282,8 @@ export class SearchService {
                         channelId: msg.channel_id,
                         guildId: msg.guild_id || params.guildId,
                         url: mediaUrl,
-                        proxyUrl: embed.image?.proxy_url || embed.video?.proxy_url || embed.thumbnail?.proxy_url || mediaUrl,
-                        thumbnailUrl: embed.thumbnail?.proxy_url || embed.thumbnail?.url || embed.image?.proxy_url || embed.image?.url,
+                        proxyUrl: safeProxyUrl,
+                        thumbnailUrl: safeThumbnailUrl,
                         filename: embed.title || embed.provider?.name || "Embedded Media",
                         type: detectedType,
                         width: embed.image?.width || embed.video?.width || embed.thumbnail?.width,
@@ -359,6 +368,40 @@ export class SearchService {
         if (embed.thumbnail || embed.url || embed.type === "link" || embed.type === "article" || embed.provider) return "embed";
 
         return null;
+    }
+
+    private static safePreviewUrl(url?: string): string | undefined {
+        if (!url || !this.isDiscordMediaUrl(url)) return undefined;
+        return url;
+    }
+
+    private static normaliseExternalMediaUrl(url: string): string {
+        try {
+            const parsed = new URL(url);
+            // Old Twitter/X embeds often store image variants as /media/id.jpg:large,
+            // which now returns 404. Convert it to the modern variant query format.
+            if (parsed.hostname === "pbs.twimg.com") {
+                const match = parsed.pathname.match(/^(\/media\/[^.]+)\.(jpg|jpeg|png|webp):(small|medium|large|orig)$/i);
+                if (match) {
+                    parsed.pathname = match[1];
+                    parsed.search = `?format=${match[2].toLowerCase()}&name=${match[3].toLowerCase()}`;
+                    return parsed.toString();
+                }
+            }
+        } catch {
+            // Keep the original if URL parsing fails.
+        }
+
+        return url;
+    }
+
+    private static isDiscordMediaUrl(url: string): boolean {
+        try {
+            const host = new URL(url).hostname.toLowerCase();
+            return host === "cdn.discordapp.com" || host === "media.discordapp.net" || host.endsWith(".discordapp.net");
+        } catch {
+            return false;
+        }
     }
 
     private static async enforceRequestSpacing(): Promise<void> {
