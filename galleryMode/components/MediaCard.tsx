@@ -1,6 +1,6 @@
-import { copyToClipboard } from "@utils/clipboard";
 import { openImageModal, openUserProfile } from "@utils/discord";
-import { openMediaModal } from "@utils/modal";
+import { copyWithToast } from "@utils/misc";
+import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { ContextMenuApi, Menu, NavigationRouter, React, useState } from "@webpack/common";
 import { MediaItem } from "../types";
 
@@ -9,164 +9,200 @@ interface MediaCardProps {
     onCloseGallery?: () => void;
 }
 
+function formatDate(isoString?: string) {
+    if (!isoString) return "";
+    try {
+        const date = new Date(isoString);
+        return date.toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric",
+            year: date.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined
+        });
+    } catch {
+        return "";
+    }
+}
+
+function formatSize(bytes?: number) {
+    if (!bytes) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function avatarUrl(item: MediaItem) {
+    const avatar = item.author.avatar;
+    if (!avatar) return null;
+    const ext = avatar.startsWith("a_") ? "gif" : "png";
+    return `https://cdn.discordapp.com/avatars/${item.author.id}/${avatar}.${ext}?size=64`;
+}
+
+function isCspSafeMediaUrl(url?: string): url is string {
+    if (!url) return false;
+    if (url.startsWith("blob:") || url.startsWith("data:")) return true;
+
+    try {
+        const host = new URL(url).hostname.toLowerCase();
+        return host === "cdn.discordapp.com" || host === "media.discordapp.net" || host.endsWith(".discordapp.net");
+    } catch {
+        return false;
+    }
+}
+
+function firstSafeMediaUrl(...urls: Array<string | undefined>) {
+    return urls.find(isCspSafeMediaUrl);
+}
+
+function isLikelyImageUrl(url?: string) {
+    return !!url && /\.(png|jpe?g|webp|gif|avif|bmp)(\?|$)/i.test(url);
+}
+
+function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: any; }) {
+    const src = firstSafeMediaUrl(item.proxyUrl, item.url);
+    const title = item.filename || item.embedTitle || "Media Preview";
+
+    return (
+        <ModalRoot {...modalProps} size={ModalSize.DYNAMIC} className="gm-modal-root">
+            <ModalHeader className="gm-modal-header">
+                <div className="gm-modal-title" title={title}>{title}</div>
+                <ModalCloseButton onClick={modalProps.onClose} />
+            </ModalHeader>
+            <ModalContent className="gm-modal-content">
+                {item.type === "video" && src ? (
+                    <video className="gm-modal-media" src={src} poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined} controls autoPlay playsInline />
+                ) : item.type === "audio" && src ? (
+                    <div className="gm-modal-file-shell">
+                        <div className="gm-modal-file-icon">🎵</div>
+                        <div className="gm-modal-file-name">{title}</div>
+                        <audio className="gm-modal-audio" src={src} controls autoPlay />
+                    </div>
+                ) : item.type === "file" ? (
+                    <div className="gm-modal-file-shell">
+                        <div className="gm-modal-file-icon">📄</div>
+                        <div className="gm-modal-file-name">{title}</div>
+                        <div className="gm-modal-file-meta">{item.fileExtension || "FILE"}{item.fileSize ? ` • ${formatSize(item.fileSize)}` : ""}</div>
+                    </div>
+                ) : src ? (
+                    <img className="gm-modal-media" src={src} alt={title} />
+                ) : (
+                    <div className="gm-modal-file-shell">
+                        <div className="gm-modal-file-icon">↗️</div>
+                        <div className="gm-modal-file-name">External preview blocked by Discord CSP</div>
+                        <div className="gm-modal-file-meta">Open the original link to view this media.</div>
+                    </div>
+                )}
+                <div className="gm-modal-actions">
+                    <button className="gm-action-btn primary" onClick={() => copyWithToast(item.url, "Copied media link!")}>Copy Link</button>
+                    <button className="gm-action-btn secondary" onClick={() => window.open(item.url, "_blank")}>Open Original</button>
+                </div>
+            </ModalContent>
+        </ModalRoot>
+    );
+}
+
 export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) => {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
 
-    // Format date string (e.g., "May 18" or "May 18, 2023")
-    const formatDate = (isoString?: string) => {
-        if (!isoString) return "";
-        try {
-            const date = new Date(isoString);
-            return date.toLocaleDateString(undefined, {
-                month: "short",
-                day: "numeric",
-                year: date.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined
-            });
-        } catch {
-            return "";
-        }
+    const jumpToMessage = () => {
+        if (!item.channelId || !item.messageId) return;
+        NavigationRouter.transitionTo(`/channels/${item.guildId || "@me"}/${item.channelId}/${item.messageId}`);
+        onCloseGallery?.();
     };
 
-    // Format file size
-    const formatSize = (bytes?: number) => {
-        if (!bytes) return "";
-        if (bytes < 1024) return `${bytes} B`;
-        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-    };
-
-    // Navigation trigger: Jump directly to message in chat
     const handleJumpToMessage = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (item.guildId && item.channelId && item.messageId) {
-            NavigationRouter.transitionTo(`/channels/${item.guildId}/${item.channelId}/${item.messageId}`);
-            if (onCloseGallery) {
-                onCloseGallery();
-            }
-        }
+        jumpToMessage();
     };
 
-    // Open author's Discord user profile modal
+    const openAuthorProfile = () => {
+        if (item.author.id) void openUserProfile(item.author.id);
+    };
+
     const handleOpenAuthorProfile = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (item.author.id) {
-            openUserProfile(item.author.id);
-        }
+        openAuthorProfile();
     };
 
-    // Open media natively inside Discord UI modal (No external browser redirection!)
-    const handleCardClick = () => {
-        const previewUrl = item.proxyUrl || item.url;
+    const copyMediaLink = () => {
+        copyWithToast(item.url, "Copied media link!");
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 1500);
+    };
 
-        if (item.type === "video") {
-            // Open video directly in Discord's native media player modal
+    const handleCardClick = () => {
+        const previewUrl = firstSafeMediaUrl(item.proxyUrl, item.url);
+
+        if ((item.type === "image" || item.type === "gif" || item.type === "embed") && previewUrl) {
             try {
-                if (typeof openMediaModal === "function") {
-                    openMediaModal({
-                        items: [{
-                            type: "VIDEO",
-                            url: previewUrl,
-                            original: item.url,
-                            width: item.width || 1280,
-                            height: item.height || 720
-                        }]
-                    });
-                } else {
-                    openImageModal({
-                        url: previewUrl,
-                        original: item.url,
-                        width: item.width || 1280,
-                        height: item.height || 720
-                    });
-                }
-            } catch (err) {
-                console.error("[GalleryMode] Video modal error:", err);
-                openImageModal({
-                    url: previewUrl,
+                openImageModal(previewUrl, {
                     original: item.url,
                     width: item.width || 1280,
                     height: item.height || 720
-                });
+                } as any);
+                return;
+            } catch (err) {
+                console.warn("[GalleryMode] Discord image modal failed; falling back to custom media modal.", err);
             }
-        } else if (item.type === "image" || item.type === "gif" || item.type === "embed") {
-            openImageModal({
-                url: previewUrl,
-                original: item.url,
-                width: item.width || 1280,
-                height: item.height || 720
-            });
-        } else {
-            window.open(item.url, "_blank");
         }
+
+        if (!previewUrl && item.type !== "file") {
+            window.open(item.url, "_blank");
+            return;
+        }
+
+        openModal((modalProps: any) => <MediaViewerModal item={item} modalProps={modalProps} />);
     };
 
-    // Context Menu Handler
     const handleContextMenu = (e: React.MouseEvent) => {
         e.preventDefault();
-        
+        e.stopPropagation();
+
         const closeMenu = ContextMenuApi.closeContextMenu || ContextMenuApi.close;
         const openMenu = ContextMenuApi.openContextMenu || ContextMenuApi.openContextMenuLazy || ContextMenuApi.open;
 
         if (typeof openMenu === "function") {
             openMenu(e, () => (
                 <Menu.Menu navId="gm-card-context-menu" onClose={closeMenu}>
-                    <Menu.MenuItem
-                        id="gm-jump"
-                        label="Jump to Message"
-                        action={handleJumpToMessage}
-                    />
-                    <Menu.MenuItem
-                        id="gm-copy-link"
-                        label="Copy Media Link"
-                        action={() => {
-                            copyToClipboard(item.url);
-                            setCopySuccess(true);
-                            setTimeout(() => setCopySuccess(false), 2000);
-                        }}
-                    />
-                    <Menu.MenuItem
-                        id="gm-open-browser"
-                        label="Open in Browser"
-                        action={() => window.open(item.url, "_blank")}
-                    />
-                    <Menu.MenuItem
-                        id="gm-author-profile"
-                        label={`View @${item.author.username}'s Profile`}
-                        action={handleOpenAuthorProfile}
-                    />
+                    <Menu.MenuItem id="gm-open" label="Open Preview" action={handleCardClick} />
+                    <Menu.MenuItem id="gm-jump" label="Jump to Message" action={jumpToMessage} />
+                    <Menu.MenuItem id="gm-copy-link" label="Copy Media Link" action={copyMediaLink} />
+                    <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => window.open(item.url, "_blank")} />
+                    <Menu.MenuItem id="gm-author-profile" label={`View @${item.author.username}'s Profile`} action={openAuthorProfile} />
                     {item.content && (
-                        <Menu.MenuItem
-                            id="gm-copy-text"
-                            label="Copy Message Text"
-                            action={() => copyToClipboard(item.content!)}
-                        />
+                        <Menu.MenuItem id="gm-copy-text" label="Copy Message Text" action={() => copyWithToast(item.content!, "Copied message text!")} />
                     )}
                 </Menu.Menu>
             ));
         }
     };
 
-    const displaySrc = item.thumbnailUrl || item.proxyUrl || item.url;
-    const typeLabel = (item.type || "FILE").toUpperCase();
+    const displaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+    const videoSrc = item.type === "video" ? firstSafeMediaUrl(item.proxyUrl, item.url) : undefined;
+    const typeLabel = (item.type || "file").toUpperCase();
+    const avatar = avatarUrl(item);
 
     return (
-        <div 
+        <div
             className="gm-media-card"
             onClick={handleCardClick}
             onContextMenu={handleContextMenu}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleCardClick();
+                }
+            }}
         >
             <div className="gm-media-preview-wrapper">
-                {/* Top-Left Type Badge */}
-                <div className={`gm-type-badge ${item.type}`}>
-                    {typeLabel}
-                </div>
+                <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>
 
-                {/* Main Media or File Preview */}
                 {item.type === "file" || item.type === "audio" ? (
                     <div className="gm-file-card-preview">
-                        <div className="gm-file-ext-badge">{item.fileExtension || "FILE"}</div>
+                        <div className="gm-file-ext-badge">{item.fileExtension || (item.type === "audio" ? "AUDIO" : "FILE")}</div>
                         <div className="gm-file-icon-circle">{item.type === "audio" ? "🎵" : "📄"}</div>
                         <div className="gm-file-name-text">{item.filename || "Attachment File"}</div>
                         {item.fileSize && <div className="gm-file-size-badge">{formatSize(item.fileSize)}</div>}
@@ -174,36 +210,40 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                 ) : hasError ? (
                     <div className="gm-file-card-preview">
                         <div className="gm-file-icon-circle">⚠️</div>
-                        <div className="gm-file-name-text">Media Preview Unavailable</div>
+                        <div className="gm-file-name-text">Preview Unavailable</div>
+                        <div className="gm-file-size-badge">Click to open the original media</div>
                     </div>
-                ) : item.type === "video" ? (
+                ) : item.type === "video" && videoSrc ? (
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
                         {!mediaLoaded && (
                             <div className="gm-media-skeleton">
                                 <div className="gm-spinner-icon" />
                             </div>
                         )}
-                        <video 
-                            src={item.proxyUrl || item.url} 
-                            poster={item.thumbnailUrl !== item.url ? item.thumbnailUrl : undefined}
-                            preload="metadata" 
-                            muted 
+                        <video
+                            src={videoSrc}
+                            poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
+                            preload="metadata"
+                            muted
                             playsInline
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
+                            onLoadedMetadata={() => setMediaLoaded(true)}
                             onLoadedData={() => setMediaLoaded(true)}
                             onCanPlay={() => setMediaLoaded(true)}
                             onError={() => {
-                                // Fallback if video tag can't render
-                                setHasError(false);
                                 setMediaLoaded(true);
+                                setHasError(true);
                             }}
-                            style={{ objectFit: "cover", width: "100%", height: "100%", display: "block" }}
                         />
                         <div className="gm-video-play-overlay">
-                            <div className="gm-play-button-circle">
-                                ▶
-                            </div>
+                            <div className="gm-play-button-circle">▶</div>
                         </div>
+                    </div>
+                ) : !displaySrc ? (
+                    <div className="gm-file-card-preview">
+                        <div className="gm-file-icon-circle">↗️</div>
+                        <div className="gm-file-name-text">External Preview</div>
+                        <div className="gm-file-size-badge">Click to open original</div>
                     </div>
                 ) : (
                     <>
@@ -212,40 +252,27 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                                 <div className="gm-spinner-icon" />
                             </div>
                         )}
-                        <img 
-                            src={displaySrc} 
-                            alt={item.filename || item.embedTitle || "Media"} 
+                        <img
+                            src={displaySrc}
+                            alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
+                            loading="lazy"
                             onLoad={() => setMediaLoaded(true)}
                             onError={() => setHasError(true)}
                         />
                     </>
                 )}
 
-                {/* Bottom-Right Date Glass Pill */}
-                {item.timestamp && (
-                    <div className="gm-card-date-badge-bottom-right">
-                        {formatDate(item.timestamp)}
-                    </div>
-                )}
+                {item.timestamp && <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>}
 
-                {/* Hover Actions Overlay with Jump Button */}
                 <div className="gm-card-actions-overlay">
-                    <button 
-                        className="gm-action-btn primary" 
-                        onClick={handleJumpToMessage} 
-                        title="Jump to Message in Chat"
-                    >
-                        Jump ➔
-                    </button>
-                    <button 
-                        className="gm-action-btn secondary" 
+                    <button className="gm-action-btn primary" onClick={handleJumpToMessage} title="Jump to Message in Chat">Jump ➔</button>
+                    <button
+                        className="gm-action-btn secondary"
                         onClick={(e) => {
                             e.stopPropagation();
-                            copyToClipboard(item.url);
-                            setCopySuccess(true);
-                            setTimeout(() => setCopySuccess(false), 2000);
-                        }} 
+                            copyMediaLink();
+                        }}
                         title="Copy Link"
                     >
                         📋
@@ -253,25 +280,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                 </div>
             </div>
 
-            {/* Author Footer Bar */}
             <div className="gm-card-footer" onClick={handleOpenAuthorProfile} title="View Author Profile">
-                {item.author.avatar ? (
-                    <img 
-                        className="gm-author-avatar" 
-                        src={`https://cdn.discordapp.com/avatars/${item.author.id}/${item.author.avatar}.png?size=64`} 
-                        alt={item.author.username} 
-                    />
+                {avatar ? (
+                    <img className="gm-author-avatar" src={avatar} alt={item.author.username} />
                 ) : (
-                    <div className="gm-author-avatar" style={{
-                        background: "var(--brand-experiment)",
-                        color: "#fff",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: "bold",
-                        fontSize: "14px"
-                    }}>
-                        {item.author.username.charAt(0).toUpperCase()}
+                    <div className="gm-author-avatar gm-author-avatar-fallback">
+                        {(item.author.username || "?").charAt(0).toUpperCase()}
                     </div>
                 )}
                 <div className="gm-author-details">
@@ -280,25 +294,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                 </div>
             </div>
 
-            {/* Copy Toast Notification */}
-            {copySuccess && (
-                <div style={{
-                    position: "absolute",
-                    top: "12px",
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    background: "var(--brand-experiment)",
-                    color: "#fff",
-                    padding: "4px 12px",
-                    borderRadius: "12px",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    zIndex: 100,
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.5)"
-                }}>
-                    Copied Link!
-                </div>
-            )}
+            {copySuccess && <div className="gm-copy-toast">Copied!</div>}
         </div>
     );
 };
