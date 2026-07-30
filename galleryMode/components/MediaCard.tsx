@@ -57,6 +57,10 @@ function isLikelyImageUrl(url?: string) {
     return !!url && /\.(png|jpe?g|webp|gif|avif|bmp)(\?|$)/i.test(url);
 }
 
+function openExternal(url: string) {
+    window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: any; }) {
     const src = firstSafeMediaUrl(item.proxyUrl, item.url);
     const title = item.filename || item.embedTitle || "Media Preview";
@@ -93,7 +97,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
                 )}
                 <div className="gm-modal-actions">
                     <button className="gm-action-btn primary" onClick={() => copyWithToast(item.url, "Copied media link!")}>Copy Link</button>
-                    <button className="gm-action-btn secondary" onClick={() => window.open(item.url, "_blank")}>Open Original</button>
+                    <button className="gm-action-btn secondary" onClick={() => openExternal(item.url)}>Open Original</button>
                 </div>
             </ModalContent>
         </ModalRoot>
@@ -148,7 +152,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
         }
 
         if (!previewUrl && item.type !== "file") {
-            window.open(item.url, "_blank");
+            openExternal(item.url);
             return;
         }
 
@@ -168,7 +172,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     <Menu.MenuItem id="gm-open" label="Open Preview" action={handleCardClick} />
                     <Menu.MenuItem id="gm-jump" label="Jump to Message" action={jumpToMessage} />
                     <Menu.MenuItem id="gm-copy-link" label="Copy Media Link" action={copyMediaLink} />
-                    <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => window.open(item.url, "_blank")} />
+                    <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => openExternal(item.url)} />
                     <Menu.MenuItem id="gm-author-profile" label={`View @${item.author.username}'s Profile`} action={openAuthorProfile} />
                     {item.content && (
                         <Menu.MenuItem id="gm-copy-text" label="Copy Message Text" action={() => copyWithToast(item.content!, "Copied message text!")} />
@@ -258,7 +262,10 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
                             loading="lazy"
                             onLoad={() => setMediaLoaded(true)}
-                            onError={() => setHasError(true)}
+                            onError={() => {
+                                setMediaLoaded(true);
+                                setHasError(true);
+                            }}
                         />
                     </>
                 )}

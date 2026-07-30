@@ -31,15 +31,52 @@ type FilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
 type ScopeType = "channel" | "guild";
 
 const PAGE_SIZE = 25;
+const SEARCHABLE_GUILD_CHANNEL_TYPES = new Set([0, 5, 10, 11, 12, 15, 16]);
 
 function normaliseGuildChannels(raw: any): any[] {
     const buckets = [raw?.SELECTABLE, raw?.VOCAL, raw?.TEXTUAL, raw?.THREADS].filter(Boolean);
     const channels = buckets.flatMap(bucket => Array.isArray(bucket) ? bucket : Object.values(bucket));
+    const seenChannelIds = new Set<string>();
 
     return channels
         .map((entry: any) => entry?.channel || entry)
-        .filter((channel: any) => channel && (channel.type === 0 || channel.type === 5 || channel.type === 15))
+        .filter((channel: any) => {
+            if (!channel?.id || !SEARCHABLE_GUILD_CHANNEL_TYPES.has(channel.type)) return false;
+            if (seenChannelIds.has(channel.id)) return false;
+            seenChannelIds.add(channel.id);
+            return true;
+        })
         .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+}
+
+function createDefaultSessionState(initialQuery: string, defaultCardSize?: string): GallerySessionState {
+    return {
+        mediaItems: [],
+        offset: 0,
+        totalResults: 0,
+        hasMore: true,
+        scrollTop: 0,
+        filterType: "all",
+        scope: "channel",
+        searchQuery: initialQuery,
+        activeQuery: initialQuery,
+        cardMinWidth: defaultCardSize || "240px",
+        selectedAuthors: [],
+        selectedChannelIds: []
+    };
+}
+
+function mergeSessionState(session: GallerySessionState | null, initialQuery: string, defaultCardSize?: string): GallerySessionState {
+    const fallback = createDefaultSessionState(initialQuery, defaultCardSize);
+    if (!session) return fallback;
+
+    return {
+        ...fallback,
+        ...session,
+        mediaItems: session.mediaItems || [],
+        selectedAuthors: session.selectedAuthors || [],
+        selectedChannelIds: session.selectedChannelIds || []
+    };
 }
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
@@ -48,35 +85,64 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
     const guildId = currentChannel?.guild_id || SelectedGuildStore?.getGuildId();
     const sessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
-    const existingSession = CacheService.getSession(sessionKey);
+    const initialSession = mergeSessionState(CacheService.getSession(sessionKey), initialQuery, defaultCardSize || "240px");
 
-    const [mediaItems, setMediaItems] = useState<MediaItem[]>(existingSession?.mediaItems || []);
-    const [loading, setLoading] = useState<boolean>(!existingSession || existingSession.mediaItems.length === 0);
+    const [mediaItems, setMediaItems] = useState<MediaItem[]>(initialSession.mediaItems);
+    const [loading, setLoading] = useState<boolean>(initialSession.mediaItems.length === 0);
     const [loadingMore, setLoadingMore] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-    const [filterType, setFilterType] = useState<FilterType>(existingSession?.filterType || "all");
-    const [searchQuery, setSearchQuery] = useState<string>(existingSession?.searchQuery || initialQuery);
-    const [activeQuery, setActiveQuery] = useState<string>(existingSession?.activeQuery || initialQuery);
-    const [offset, setOffset] = useState<number>(existingSession?.offset || 0);
-    const [totalResults, setTotalResults] = useState<number>(existingSession?.totalResults || 0);
-    const [hasMore, setHasMore] = useState<boolean>(existingSession?.hasMore ?? true);
-    const [scope, setScope] = useState<ScopeType>(existingSession?.scope || "channel");
-    const [cardMinWidth, setCardMinWidth] = useState<string>(existingSession?.cardMinWidth || defaultCardSize || "240px");
-    const [showScrollTop, setShowScrollTop] = useState<boolean>((existingSession?.scrollTop || 0) > 400);
+    const [filterType, setFilterType] = useState<FilterType>(initialSession.filterType);
+    const [searchQuery, setSearchQuery] = useState<string>(initialSession.searchQuery);
+    const [activeQuery, setActiveQuery] = useState<string>(initialSession.activeQuery);
+    const [offset, setOffset] = useState<number>(initialSession.offset);
+    const [totalResults, setTotalResults] = useState<number>(initialSession.totalResults);
+    const [hasMore, setHasMore] = useState<boolean>(initialSession.hasMore);
+    const [scope, setScope] = useState<ScopeType>(initialSession.scope);
+    const [cardMinWidth, setCardMinWidth] = useState<string>(initialSession.cardMinWidth || defaultCardSize || "240px");
+    const [showScrollTop, setShowScrollTop] = useState<boolean>((initialSession.scrollTop || 0) > 400);
     const [authorQuery, setAuthorQuery] = useState<string>("");
-    const [selectedAuthors, setSelectedAuthors] = useState<AuthorPill[]>(existingSession?.selectedAuthors || []);
+    const [selectedAuthors, setSelectedAuthors] = useState<AuthorPill[]>(initialSession.selectedAuthors || []);
     const [showChannelDropdown, setShowChannelDropdown] = useState<boolean>(false);
-    const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(existingSession?.selectedChannelIds || []);
+    const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(initialSession.selectedChannelIds || []);
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const observerTargetRef = useRef<HTMLDivElement>(null);
-    const isFirstMountRef = useRef<boolean>(true);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
+    const lastSessionKeyRef = useRef<string>(sessionKey);
+    const pendingRestoreScrollRef = useRef<number | null>(initialSession.mediaItems.length > 0 ? initialSession.scrollTop : null);
+    const skipAutoFetchRef = useRef<boolean>(initialSession.mediaItems.length > 0);
+    const isHydratingSessionRef = useRef<boolean>(false);
+    const stateSnapshotRef = useRef({
+        mediaItems,
+        offset,
+        totalResults,
+        hasMore,
+        filterType,
+        scope,
+        searchQuery,
+        activeQuery,
+        cardMinWidth,
+        selectedAuthors,
+        selectedChannelIds
+    });
 
     mediaItemsRef.current = mediaItems;
+    stateSnapshotRef.current = {
+        mediaItems,
+        offset,
+        totalResults,
+        hasMore,
+        filterType,
+        scope,
+        searchQuery,
+        activeQuery,
+        cardMinWidth,
+        selectedAuthors,
+        selectedChannelIds
+    };
 
     const guildChannels = React.useMemo(() => {
         if (!guildId || !GuildChannelStore) return [];
@@ -88,26 +154,39 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     }, [guildId]);
 
+    const availableGuildChannelIds = React.useMemo(() => new Set(guildChannels.map((channel: any) => channel.id)), [guildChannels]);
+
+    const effectiveSelectedChannelIds = React.useMemo(() => {
+        if (selectedChannelIds.length === 0 || availableGuildChannelIds.size === 0) return selectedChannelIds;
+        return selectedChannelIds.filter(id => availableGuildChannelIds.has(id));
+    }, [selectedChannelIds, availableGuildChannelIds]);
+
     const channelPillLabel = React.useMemo(() => {
-        if (selectedChannelIds.length > 0) {
-            const firstChan = guildChannels.find((c: any) => c.id === selectedChannelIds[0]);
+        const currentChannelName = currentChannel?.name
+            || currentChannel?.rawRecipients?.map((recipient: any) => recipient.username).join(", ")
+            || "Channel";
+
+        if (effectiveSelectedChannelIds.length > 0) {
+            const firstChan = guildChannels.find((channel: any) => channel.id === effectiveSelectedChannelIds[0]);
             const firstName = firstChan?.name || "channel";
-            return selectedChannelIds.length > 1 ? `#${firstName} +${selectedChannelIds.length - 1}` : `#${firstName}`;
+            return effectiveSelectedChannelIds.length > 1 ? `#${firstName} +${effectiveSelectedChannelIds.length - 1}` : `#${firstName}`;
         }
+
         if (scope === "guild") return "Entire Server";
-        return `#${currentChannel?.name || "Channel"}`;
-    }, [selectedChannelIds, guildChannels, currentChannel, scope]);
+        return guildId ? `#${currentChannelName}` : currentChannelName;
+    }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope]);
 
     const authorSuggestions = React.useMemo(() => {
         if (!authorQuery.trim() || !guildId || !GuildMemberStore || !UserStore) return [];
+
         try {
             const q = authorQuery.trim().replace(/^@/, "").toLowerCase();
             const rawMembers = GuildMemberStore.getMembers(guildId) || [];
             const members = Array.isArray(rawMembers) ? rawMembers : Object.values(rawMembers);
 
             return members
-                .map((m: any) => UserStore.getUser(m.userId || m.user_id || m.id))
-                .filter((user: any) => user && !selectedAuthors.some(a => a.id === user.id))
+                .map((member: any) => UserStore.getUser(member.userId || member.user_id || member.id))
+                .filter((user: any) => user && !selectedAuthors.some(author => author.id === user.id))
                 .filter((user: any) => {
                     const username = user.username?.toLowerCase() || "";
                     const globalName = (user.globalName || user.global_name || "").toLowerCase();
@@ -119,23 +198,52 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     }, [authorQuery, guildId, selectedAuthors]);
 
-    const saveSession = (scrollTop = scrollContainerRef.current?.scrollTop || 0) => {
-        const state: GallerySessionState = {
-            mediaItems: mediaItemsRef.current,
-            offset,
-            totalResults,
-            hasMore,
+    const persistSession = React.useCallback((targetSessionKey = sessionKey, scrollTop = scrollContainerRef.current?.scrollTop || 0) => {
+        const snapshot = stateSnapshotRef.current;
+
+        CacheService.saveSession(targetSessionKey, {
+            mediaItems: snapshot.mediaItems,
+            offset: snapshot.offset,
+            totalResults: snapshot.totalResults,
+            hasMore: snapshot.hasMore,
             scrollTop,
-            filterType,
-            scope,
-            searchQuery,
-            activeQuery,
-            cardMinWidth,
-            selectedAuthors,
-            selectedChannelIds
-        };
-        CacheService.saveSession(sessionKey, state);
-    };
+            filterType: snapshot.filterType,
+            scope: snapshot.scope,
+            searchQuery: snapshot.searchQuery,
+            activeQuery: snapshot.activeQuery,
+            cardMinWidth: snapshot.cardMinWidth,
+            selectedAuthors: snapshot.selectedAuthors,
+            selectedChannelIds: snapshot.selectedChannelIds
+        });
+    }, [sessionKey]);
+
+    const applySessionState = React.useCallback((session: GallerySessionState | null) => {
+        const next = mergeSessionState(session, initialQuery, defaultCardSize || "240px");
+
+        latestRequestRef.current++;
+        fetchingRef.current = false;
+        mediaItemsRef.current = next.mediaItems;
+        pendingRestoreScrollRef.current = next.mediaItems.length > 0 ? next.scrollTop || 0 : null;
+        skipAutoFetchRef.current = next.mediaItems.length > 0;
+
+        setMediaItems(next.mediaItems);
+        setLoading(next.mediaItems.length === 0);
+        setLoadingMore(false);
+        setError(null);
+        setFilterType(next.filterType);
+        setSearchQuery(next.searchQuery);
+        setActiveQuery(next.activeQuery);
+        setOffset(next.offset);
+        setTotalResults(next.totalResults);
+        setHasMore(next.hasMore);
+        setScope(next.scope);
+        setCardMinWidth(next.cardMinWidth || defaultCardSize || "240px");
+        setShowScrollTop((next.scrollTop || 0) > 400);
+        setAuthorQuery("");
+        setSelectedAuthors(next.selectedAuthors || []);
+        setShowChannelDropdown(false);
+        setSelectedChannelIds(next.selectedChannelIds || []);
+    }, [defaultCardSize, initialQuery]);
 
     const fetchMedia = async (
         fetchOffset: number,
@@ -171,10 +279,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         const params: SearchParameters = {
             channelId: scope === "channel" ? activeChannelId : undefined,
             guildId: activeGuildId,
-            channelIds: scope === "guild" && selectedChannelIds.length > 0 ? selectedChannelIds : undefined,
+            channelIds: scope === "guild" && effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined,
             filterType: filter,
             query,
-            authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(a => a.id) : undefined,
+            authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
             offset: fetchOffset,
             limit: PAGE_SIZE
         };
@@ -189,6 +297,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             setTotalResults(res.totalResults);
             setHasMore(res.hasMore);
             setOffset(fetchOffset);
+            setShowScrollTop((scrollContainerRef.current?.scrollTop || 0) > 400);
 
             if (isReset) {
                 scrollContainerRef.current?.scrollTo({ top: 0 });
@@ -206,17 +315,18 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 activeQuery: query,
                 cardMinWidth,
                 selectedAuthors,
-                selectedChannelIds
+                selectedChannelIds: effectiveSelectedChannelIds
             });
         } catch (err: any) {
             if (requestId !== latestRequestRef.current) return;
             console.error("[GalleryMode] Fetch error:", err);
+
             if (err?.status === 429 || err?.body?.retry_after || err?.retry_after) {
                 setError("Discord Search is rate limited right now. Wait a few seconds, then retry.");
             } else if (err?.status === 403) {
                 setError("Discord denied access to search this channel/server. Check your permissions.");
             } else if (err?.body?.code === 50024) {
-                setError("Discord cannot search this channel surface directly. Try the server scope or select a normal text/thread channel.");
+                setError("Discord cannot search this channel surface directly. Try the server scope or select a normal text/thread/media channel.");
             } else {
                 setError(err?.body?.message || err?.message || "Failed to fetch gallery media from Discord Search.");
             }
@@ -240,23 +350,24 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     };
 
     const toggleChannelSelection = (id: string) => {
-        setSelectedChannelIds(prev => prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]);
+        setSelectedChannelIds(prev => prev.includes(id) ? prev.filter(channelId => channelId !== id) : [...prev, id]);
     };
 
     const addAuthorPill = (user: any) => {
         const pill: AuthorPill = { id: user.id, name: user.globalName || user.global_name || user.username };
-        setSelectedAuthors(prev => prev.some(a => a.id === user.id) ? prev : [...prev, pill]);
+        setSelectedAuthors(prev => prev.some(author => author.id === user.id) ? prev : [...prev, pill]);
         setAuthorQuery("");
     };
 
     const removeAuthorPill = (id: string) => {
-        setSelectedAuthors(prev => prev.filter(a => a.id !== id));
+        setSelectedAuthors(prev => prev.filter(author => author.id !== id));
     };
 
     const clearFilters = () => {
         setFilterType("all");
         setSearchQuery("");
         setActiveQuery("");
+        setAuthorQuery("");
         setSelectedAuthors([]);
         setSelectedChannelIds([]);
         setShowChannelDropdown(false);
@@ -265,7 +376,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const handleScroll = () => {
         const scrollTop = scrollContainerRef.current?.scrollTop || 0;
         setShowScrollTop(scrollTop > 400);
-        saveSession(scrollTop);
+        persistSession(sessionKey, scrollTop);
     };
 
     const scrollToTop = () => {
@@ -273,7 +384,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     };
 
     useEffect(() => {
-        const interval = setInterval(() => setRateLimitTick(t => t + 1), 1000);
+        const interval = setInterval(() => setRateLimitTick(tick => tick + 1), 1000);
         return () => clearInterval(interval);
     }, []);
 
@@ -292,24 +403,65 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     }, [onClose, showChannelDropdown]);
 
     useEffect(() => {
-        if (existingSession && scrollContainerRef.current && mediaItems.length > 0) {
-            requestAnimationFrame(() => {
-                if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = existingSession.scrollTop;
-            });
+        if (!guildId || availableGuildChannelIds.size === 0) return;
+        setSelectedChannelIds(prev => {
+            const next = prev.filter(id => availableGuildChannelIds.has(id));
+            return next.length === prev.length ? prev : next;
+        });
+    }, [availableGuildChannelIds, guildId]);
+
+    useEffect(() => {
+        if (lastSessionKeyRef.current === sessionKey) return;
+
+        persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
+        isHydratingSessionRef.current = true;
+        lastSessionKeyRef.current = sessionKey;
+        applySessionState(CacheService.getSession(sessionKey));
+    }, [applySessionState, persistSession, sessionKey]);
+
+    useEffect(() => {
+        const scrollTop = pendingRestoreScrollRef.current;
+        if (scrollTop == null || !scrollContainerRef.current) return;
+
+        pendingRestoreScrollRef.current = null;
+        requestAnimationFrame(() => {
+            if (scrollContainerRef.current) {
+                scrollContainerRef.current.scrollTop = scrollTop;
+            }
+        });
+    }, [mediaItems.length, sessionKey]);
+
+    useEffect(() => {
+        if (isHydratingSessionRef.current) {
+            isHydratingSessionRef.current = false;
+            return;
         }
-        // Restore only once per mount; repeated restoration fights normal scrolling.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+
+        persistSession(sessionKey, scrollContainerRef.current?.scrollTop || 0);
+    }, [
+        activeQuery,
+        cardMinWidth,
+        filterType,
+        hasMore,
+        mediaItems,
+        offset,
+        persistSession,
+        scope,
+        searchQuery,
+        selectedAuthors,
+        selectedChannelIds,
+        sessionKey,
+        totalResults
+    ]);
 
     useEffect(() => {
-        return () => saveSession(scrollContainerRef.current?.scrollTop || 0);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [mediaItems, offset, totalResults, hasMore, filterType, scope, searchQuery, activeQuery, cardMinWidth, selectedAuthors, selectedChannelIds]);
+        return () => persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
+    }, [persistSession]);
 
     useEffect(() => {
-        if (isFirstMountRef.current) {
-            isFirstMountRef.current = false;
-            if (existingSession && mediaItems.length > 0) return;
+        if (skipAutoFetchRef.current) {
+            skipAutoFetchRef.current = false;
+            return;
         }
 
         latestRequestRef.current++;
@@ -320,8 +472,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [channelId, guildId, filterType, activeQuery, scope, selectedAuthors, selectedChannelIds]);
+    }, [activeQuery, channelId, effectiveSelectedChannelIds, filterType, guildId, scope, selectedAuthors]);
 
     useEffect(() => {
         const target = observerTargetRef.current;
@@ -337,8 +488,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         observer.observe(target);
         return () => observer.disconnect();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [hasMore, loading, loadingMore, offset, filterType, activeQuery, error, mediaItems.length]);
+    }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset]);
 
     const rateLimitState = SearchService.getRateLimitState();
     const retrySeconds = rateLimitState.isRateLimited ? Math.max(1, Math.ceil((rateLimitState.resetTimestamp - Date.now()) / 1000)) : 0;
@@ -385,23 +535,23 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         {guildId && scope === "guild" && (
                             <div className="gm-channel-select-wrap">
                                 <button
-                                    className={`gm-scope-btn gm-channel-select-btn ${selectedChannelIds.length > 0 ? "active" : ""}`}
-                                    onClick={() => setShowChannelDropdown(v => !v)}
+                                    className={`gm-scope-btn gm-channel-select-btn ${effectiveSelectedChannelIds.length > 0 ? "active" : ""}`}
+                                    onClick={() => setShowChannelDropdown(value => !value)}
                                 >
-                                    # {selectedChannelIds.length > 0 ? `${selectedChannelIds.length} Channels` : "Select Channels"} ▼
+                                    # {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} Channels` : "Select Channels"} ▼
                                 </button>
                                 {showChannelDropdown && (
                                     <div className="gm-channel-dropdown">
                                         <div className="gm-dropdown-title">Select Channels ({guildChannels.length} available)</div>
-                                        {selectedChannelIds.length > 0 && (
+                                        {effectiveSelectedChannelIds.length > 0 && (
                                             <button className="gm-dropdown-link" onClick={() => setSelectedChannelIds([])}>Clear selected channels</button>
                                         )}
                                         {guildChannels.length === 0 ? (
-                                            <div className="gm-dropdown-empty">No text channels found in this server.</div>
-                                        ) : guildChannels.map((ch: any) => (
-                                            <label key={ch.id} className="gm-channel-option">
-                                                <input type="checkbox" checked={selectedChannelIds.includes(ch.id)} onChange={() => toggleChannelSelection(ch.id)} />
-                                                <span>#{ch.name}</span>
+                                            <div className="gm-dropdown-empty">No searchable text, thread, forum, or media channels found in this server.</div>
+                                        ) : guildChannels.map((channel: any) => (
+                                            <label key={channel.id} className="gm-channel-option">
+                                                <input type="checkbox" checked={effectiveSelectedChannelIds.includes(channel.id)} onChange={() => toggleChannelSelection(channel.id)} />
+                                                <span>#{channel.name}</span>
                                             </label>
                                         ))}
                                     </div>
@@ -455,10 +605,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
                             {authorSuggestions.length > 0 && (
                                 <div className="gm-author-suggestions">
-                                    {authorSuggestions.map((u: any) => (
-                                        <button key={u.id} className="gm-author-suggestion" onClick={() => addAuthorPill(u)}>
-                                            <span>{u.globalName || u.global_name || u.username}</span>
-                                            <small>@{u.username}</small>
+                                    {authorSuggestions.map((user: any) => (
+                                        <button key={user.id} className="gm-author-suggestion" onClick={() => addAuthorPill(user)}>
+                                            <span>{user.globalName || user.global_name || user.username}</span>
+                                            <small>@{user.username}</small>
                                         </button>
                                     ))}
                                 </div>
@@ -500,7 +650,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     <div className="gm-error-state">
                         <div className="gm-empty-title">Couldn’t load media</div>
                         <p>{error}</p>
-                        <button className="gm-action-btn primary" onClick={() => fetchMedia(0, filterType, activeQuery, true)}>Retry Query</button>
+                        <button className="gm-action-btn primary" onClick={() => void fetchMedia(0, filterType, activeQuery, true)}>Retry Query</button>
                     </div>
                 )}
 
