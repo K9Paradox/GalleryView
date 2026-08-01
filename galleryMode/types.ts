@@ -130,6 +130,7 @@ export interface SearchCacheEntry {
     items: MediaItem[];
     totalResults: number;
     hasMore: boolean;
+    nextOffset: number;
 }
 
 export interface RateLimitState {

@@ -125,7 +125,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
     };
 
     const openAuthorProfile = () => {
-        if (item.author.id) void openUserProfile(item.author.id);
+        if (!item.author.id) return;
+        // openUserProfile() throws when the user cannot be resolved (e.g. deleted account or not
+        // cached yet). Guard against the unhandled promise rejection that would otherwise surface.
+        openUserProfile(item.author.id).catch(() => {
+            console.warn("[GalleryMode] Could not open author profile for", item.author.id);
+        });
     };
 
     const handleOpenAuthorProfile = (e: React.MouseEvent) => {
@@ -144,11 +149,13 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
 
         if ((item.type === "image" || item.type === "gif" || item.type === "embed") && previewUrl) {
             try {
-                openImageModal(previewUrl, {
+                // Current Vencord signature: openImageModal(item, props?) where item carries url/original/dimensions.
+                openImageModal({
+                    url: previewUrl,
                     original: item.url,
                     width: item.width || 1280,
                     height: item.height || 720
-                } as any);
+                });
                 return;
             } catch (err) {
                 console.warn("[GalleryMode] Discord image modal failed; falling back to custom media modal.", err);

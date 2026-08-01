@@ -69,13 +69,14 @@ export class CacheService {
     /**
      * Store search results into the cache
      */
-    public static set(params: SearchParameters, items: MediaItem[], totalResults: number, hasMore: boolean): void {
+    public static set(params: SearchParameters, items: MediaItem[], totalResults: number, hasMore: boolean, nextOffset?: number): void {
         const key = this.generateKey(params);
         this.cache.set(key, {
             timestamp: Date.now(),
             items,
             totalResults,
-            hasMore
+            hasMore,
+            nextOffset: nextOffset ?? ((params.offset || 0) + items.length)
         });
     }
 
