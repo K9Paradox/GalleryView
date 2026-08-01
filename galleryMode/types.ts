@@ -1,108 +1,141 @@
-import { definePluginSettings } from "@api/Settings";
-import ErrorBoundary from "@components/ErrorBoundary";
-import definePlugin, { OptionType } from "@utils/types";
-import { React, useEffect, useState } from "@webpack/common";
-import { GalleryView } from "./components/GalleryView";
-import { GalleryHeaderButton } from "./components/HeaderSearchBar";
-import "./styles.css";
+export type MediaType = "image" | "gif" | "video" | "embed" | "file" | "audio";
 
-export const settings = definePluginSettings({
-    layout: {
-        type: OptionType.SELECT,
-        description: "Gallery Layout",
-        options: [
-            { label: "Grid — uniform square tiles", value: "grid", default: true },
-            { label: "Masonry — natural image aspect ratios", value: "masonry" }
-        ]
-    },
-    defaultCardSize: {
-        type: OptionType.SELECT,
-        description: "Card Width / Grid Density",
-        options: [
-            { label: "Compact (~180px - High Density)", value: "180px" },
-            { label: "Standard (~240px - Balanced)", value: "240px", default: true },
-            { label: "Large (~320px - Expanded)", value: "320px" },
-            { label: "Showcase (~420px - High Detail)", value: "420px" }
-        ]
-    },
-    nsfw: {
-        type: OptionType.BOOLEAN,
-        description: "Include NSFW results in the gallery",
-        default: true
-    }
-});
-
-// Reactive state store for Gallery Mode active status
-let isGalleryActive = false;
-const listeners = new Set<(active: boolean) => void>();
-
-export function setGalleryActive(active: boolean) {
-    isGalleryActive = active;
-    listeners.forEach(fn => fn(active));
+export interface MediaAuthor {
+    id: string;
+    username: string;
+    globalName?: string;
+    avatar?: string;
+    avatarDecoration?: string;
+    bot?: boolean;
 }
 
-export function useGalleryActive() {
-    const [active, setActive] = useState(isGalleryActive);
-    useEffect(() => {
-        listeners.add(setActive);
-        return () => { listeners.delete(setActive); };
-    }, []);
-    return active;
+export interface MediaItem {
+    id: string;
+    messageId: string;
+    channelId: string;
+    guildId?: string;
+    author: MediaAuthor;
+    timestamp: string;
+    content: string;
+    type: MediaType;
+    url: string;
+    proxyUrl?: string;
+    thumbnailUrl?: string;
+    width?: number;
+    height?: number;
+    filename?: string;
+    fileSize?: number;
+    fileExtension?: string;
+    embedTitle?: string;
+    embedDescription?: string;
+    embedSiteName?: string;
+    embedColor?: number;
+    isVideo?: boolean;
 }
 
-// Header button wrapper component with crash protection. The patch replaces Discord's
-// trailing header Fragment with this component, so we must preserve props.children.
-export function HeaderButtonWrapper({ children }: { children?: React.ReactNode; }) {
-    const active = useGalleryActive();
-    return (
-        <>
-            {children}
-            <GalleryHeaderButton
-                active={active}
-                onToggle={() => setGalleryActive(!active)}
-            />
-            {active && (
-                <GalleryView
-                    onClose={() => setGalleryActive(false)}
-                />
-            )}
-        </>
-    );
+export interface SearchParameters {
+    channelId?: string;
+    guildId?: string;
+    channelIds?: string[];
+    query?: string;
+    filterType?: "all" | "image" | "video" | "embed" | "file" | "audio";
+    beforeDate?: string;
+    afterDate?: string;
+    hasImage?: boolean;
+    hasVideo?: boolean;
+    hasEmbed?: boolean;
+    offset?: number;
+    limit?: number;
+    authorId?: string;
+    authorIds?: string[];
+    mentions?: string;
+    nsfw?: boolean;
 }
 
-export default definePlugin({
-    name: "GalleryMode",
-    description: "Turns text channels and servers into a rich visual media gallery powered directly by Discord's native backend Search API.",
-    tags: ["Media", "Utility"],
-    searchTerms: ["gallery", "media", "images", "gifs", "videos", "search", "library"],
-    authors: [
-        {
-            name: "K9 & ENI",
-            id: 0n
-        }
-    ],
-    settings,
+export interface DiscordAttachment {
+    id: string;
+    filename: string;
+    size: number;
+    url: string;
+    proxy_url: string;
+    height?: number;
+    width?: number;
+    content_type?: string;
+}
 
-    // Safe, single AST patch into Discord's header bar
-    patches: [
-        {
-            find: '?"BACK_FORWARD_NAVIGATION":',
-            replacement: {
-                match: /(trailing:.{0,50}?)\i\.Fragment,(?=\{children:\[)/,
-                replace: "$1$self.renderHeaderButton,"
-            }
-        }
-    ],
+export interface DiscordEmbed {
+    title?: string;
+    type?: string;
+    description?: string;
+    url?: string;
+    color?: number;
+    timestamp?: string;
+    provider?: {
+        name?: string;
+        url?: string;
+    };
+    author?: {
+        name?: string;
+        url?: string;
+        icon_url?: string;
+    };
+    thumbnail?: {
+        url: string;
+        proxy_url?: string;
+        height?: number;
+        width?: number;
+    };
+    image?: {
+        url: string;
+        proxy_url?: string;
+        height?: number;
+        width?: number;
+    };
+    video?: {
+        url: string;
+        proxy_url?: string;
+        height?: number;
+        width?: number;
+    };
+}
 
-    // Wrapped in Vencord's ErrorBoundary to guarantee zero startup crashes
-    renderHeaderButton: ErrorBoundary.wrap((props: any) => <HeaderButtonWrapper {...props} key="gallery-mode-header-btn" />, { noop: true }),
+export interface DiscordUser {
+    id: string;
+    username: string;
+    global_name?: string;
+    avatar?: string;
+    avatar_decoration?: string;
+    bot?: boolean;
+}
 
-    start() {
-        console.log("[GalleryMode] Plugin successfully initialized.");
-    },
+export interface DiscordMessage {
+    id: string;
+    channel_id: string;
+    guild_id?: string;
+    author: DiscordUser;
+    content: string;
+    timestamp: string;
+    edited_timestamp?: string;
+    attachments: DiscordAttachment[];
+    embeds: DiscordEmbed[];
+}
 
-    stop() {
-        setGalleryActive(false);
-        console.log("[GalleryMode] Plugin stopped.");
-    }
-});
+export interface DiscordSearchResponse {
+    total_results: number;
+    messages: DiscordMessage[][];
+    analytics_id?: string;
+}
+
+export interface SearchCacheEntry {
+    timestamp: number;
+    items: MediaItem[];
+    totalResults: number;
+    hasMore: boolean;
+    nextOffset: number;
+}
+
+export interface RateLimitState {
+    isRateLimited: boolean;
+    retryAfterMs: number;
+    resetTimestamp: number;
+}
