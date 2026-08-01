@@ -80,7 +80,7 @@ function mergeSessionState(session: GallerySessionState | null, initialQuery: st
 }
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
-    const { defaultCardSize } = settings.use(["defaultCardSize"]);
+    const { defaultCardSize, layout, nsfw } = settings.use(["defaultCardSize", "layout", "nsfw"]);
     const channelId = SelectedChannelStore?.getChannelId();
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
     // NOTE: currentChannel.guild_id is undefined for DM / group-DM channels. We must NOT fall back
@@ -105,6 +105,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [cardMinWidth, setCardMinWidth] = useState<string>(initialSession.cardMinWidth || defaultCardSize || "240px");
     const [showScrollTop, setShowScrollTop] = useState<boolean>((initialSession.scrollTop || 0) > 400);
     const [authorQuery, setAuthorQuery] = useState<string>("");
+    const [debouncedAuthorQuery, setDebouncedAuthorQuery] = useState<string>("");
     const [selectedAuthors, setSelectedAuthors] = useState<AuthorPill[]>(initialSession.selectedAuthors || []);
     const [showChannelDropdown, setShowChannelDropdown] = useState<boolean>(false);
     const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(initialSession.selectedChannelIds || []);
@@ -116,6 +117,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const fetchingRef = useRef<boolean>(false);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
     const lastSessionKeyRef = useRef<string>(sessionKey);
+    // Track the latest scroll top in a ref. During unmount React nulls DOM refs, so reading
+    // scrollContainerRef.current there would always yield 0 and clobber the real scroll depth
+    // that onScroll persisted — losing the user's position when they reopen the gallery.
+    const lastScrollTopRef = useRef<number>(initialSession.scrollTop || 0);
     const pendingRestoreScrollRef = useRef<number | null>(initialSession.mediaItems.length > 0 ? initialSession.scrollTop : null);
     const skipAutoFetchRef = useRef<boolean>(initialSession.mediaItems.length > 0);
     const isHydratingSessionRef = useRef<boolean>(false);
@@ -181,10 +186,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope]);
 
     const authorSuggestions = React.useMemo(() => {
-        if (!authorQuery.trim() || !guildId || !GuildMemberStore || !UserStore) return [];
+        if (!debouncedAuthorQuery.trim() || !guildId || !GuildMemberStore || !UserStore) return [];
 
         try {
-            const q = authorQuery.trim().replace(/^@/, "").toLowerCase();
+            const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
             const rawMembers = GuildMemberStore.getMembers(guildId) || [];
             const members = Array.isArray(rawMembers) ? rawMembers : Object.values(rawMembers);
 
@@ -200,9 +205,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         } catch {
             return [];
         }
-    }, [authorQuery, guildId, selectedAuthors]);
+    }, [debouncedAuthorQuery, guildId, selectedAuthors]);
 
-    const persistSession = React.useCallback((targetSessionKey = sessionKey, scrollTop = scrollContainerRef.current?.scrollTop || 0) => {
+    // Debounce the author search so we don't filter every guild member on every keystroke.
+    useEffect(() => {
+        const t = setTimeout(() => setDebouncedAuthorQuery(authorQuery), 150);
+        return () => clearTimeout(t);
+    }, [authorQuery]);
+
+    const persistSession = React.useCallback((targetSessionKey = sessionKey, scrollTop = lastScrollTopRef.current) => {
         const snapshot = stateSnapshotRef.current;
 
         CacheService.saveSession(targetSessionKey, {
@@ -289,7 +300,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             query,
             authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
             offset: fetchOffset,
-            limit: PAGE_SIZE
+            limit: PAGE_SIZE,
+            nsfw
         };
 
         try {
@@ -318,7 +330,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 offset: nextOffset,
                 totalResults: res.totalResults,
                 hasMore: res.hasMore,
-                scrollTop: isReset ? 0 : scrollContainerRef.current?.scrollTop || 0,
+                scrollTop: isReset ? 0 : lastScrollTopRef.current,
                 filterType: filter,
                 scope,
                 searchQuery,
@@ -386,6 +398,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const handleScroll = () => {
         const scrollTop = scrollContainerRef.current?.scrollTop || 0;
+        lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
         persistSession(sessionKey, scrollTop);
     };
@@ -445,6 +458,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         requestAnimationFrame(() => {
             if (scrollContainerRef.current) {
                 scrollContainerRef.current.scrollTop = scrollTop;
+                lastScrollTopRef.current = scrollTop;
             }
         });
     }, [mediaItems.length, sessionKey]);
@@ -473,7 +487,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     ]);
 
     useEffect(() => {
-        return () => persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
+        // Use lastScrollTopRef here — the DOM ref is nulled during unmount, so reading it directly
+        // would save 0 and wipe the user's saved scroll position.
+        return () => persistSession(lastSessionKeyRef.current, lastScrollTopRef.current);
     }, [persistSession]);
 
     useEffect(() => {
@@ -682,7 +698,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 )}
 
                 {!loading && mediaItems.length > 0 && (
-                    <div className="gm-media-grid" style={{ "--gm-card-min-width": cardMinWidth } as React.CSSProperties}>
+                    <div
+                        className={`gm-media-grid ${layout === "masonry" ? "gm-masonry" : ""}`}
+                        style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
+                    >
                         {mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
                     </div>
                 )}
