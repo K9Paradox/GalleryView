@@ -293,6 +293,33 @@
     gap: 16px;
 }
 
+/* Masonry layout — adapts to each item's natural aspect ratio instead of square tiles */
+.gm-media-grid.gm-masonry {
+    display: block;
+    columns: var(--gm-col-width, 240px);
+    column-gap: 16px;
+}
+
+.gm-media-grid.gm-masonry .gm-media-card {
+    break-inside: avoid;
+    margin-bottom: 16px;
+}
+
+.gm-media-grid.gm-masonry .gm-media-preview-wrapper {
+    aspect-ratio: auto;
+    height: auto;
+}
+
+.gm-media-grid.gm-masonry .gm-media-element {
+    height: auto;
+    object-fit: contain;
+    max-height: 72vh;
+}
+
+.gm-media-grid.gm-masonry .gm-media-card:hover .gm-media-element {
+    transform: none;
+}
+
 /* Media Card Styling */
 .gm-media-card {
     background: rgba(18, 19, 23, 0.92) !important;
@@ -563,6 +590,25 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+.gm-author-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.gm-bot-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    background: var(--brand-experiment, #5865f2) !important;
+    color: #ffffff !important;
 }
 
 .gm-author-name {
