@@ -83,11 +83,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const { defaultCardSize } = settings.use(["defaultCardSize"]);
     const channelId = SelectedChannelStore?.getChannelId();
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
-    // NOTE: currentChannel.guild_id is undefined for DM / group-DM channels. We must NOT fall back
-    // to SelectedGuildStore here — it returns the last-selected server from the left nav (which stays
-    // selected even while browsing DMs), which would make us query a guild search endpoint with a DM
-    // channel_id and fail to load any media. Only use the fallback when there is genuinely no channel.
-    const guildId = currentChannel?.guild_id || (currentChannel ? undefined : SelectedGuildStore?.getGuildId());
+    const guildId = currentChannel?.guild_id || SelectedGuildStore?.getGuildId();
     const sessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
     const initialSession = mergeSessionState(CacheService.getSession(sessionKey), initialQuery, defaultCardSize || "240px");
 
@@ -262,8 +258,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         const activeChannelId = SelectedChannelStore?.getChannelId();
         const activeChannel = activeChannelId ? ChannelStore?.getChannel(activeChannelId) : null;
-        // Same DM-safe guard as above: only fall back to SelectedGuildStore when no channel is active.
-        const activeGuildId = activeChannel?.guild_id || (activeChannel ? undefined : SelectedGuildStore?.getGuildId());
+        const activeGuildId = activeChannel?.guild_id || SelectedGuildStore?.getGuildId();
 
         if (!activeChannelId && !activeGuildId) {
             setError("No active channel or server detected.");
@@ -296,17 +291,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             const res = await SearchService.searchMedia(params);
             if (requestId !== latestRequestRef.current) return;
 
-            // Discord search returns "hit groups" per page, so the correct next offset is the
-            // number of results actually returned, not a fixed PAGE_SIZE step. This prevents
-            // skipped media when a page returns fewer results than PAGE_SIZE.
-            const nextOffset = res.nextOffset ?? (fetchOffset + PAGE_SIZE);
-
             const updatedItems = isReset ? res.items : CacheService.deduplicateItems(mediaItemsRef.current, res.items);
             mediaItemsRef.current = updatedItems;
             setMediaItems(updatedItems);
             setTotalResults(res.totalResults);
             setHasMore(res.hasMore);
-            setOffset(nextOffset);
+            setOffset(fetchOffset);
             setShowScrollTop((scrollContainerRef.current?.scrollTop || 0) > 400);
 
             if (isReset) {
@@ -315,7 +305,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
             CacheService.saveSession(sessionKey, {
                 mediaItems: updatedItems,
-                offset: nextOffset,
+                offset: fetchOffset,
                 totalResults: res.totalResults,
                 hasMore: res.hasMore,
                 scrollTop: isReset ? 0 : scrollContainerRef.current?.scrollTop || 0,
@@ -351,8 +341,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const loadNextPage = () => {
         if (!hasMore || loading || loadingMore || fetchingRef.current || error) return;
-        // `offset` now tracks the next offset to request (see fetchMedia).
-        void fetchMedia(offset, filterType, activeQuery, false);
+        void fetchMedia(offset + PAGE_SIZE, filterType, activeQuery, false);
     };
 
     const handleSearchSubmit = (e: React.FormEvent) => {
@@ -420,13 +409,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return next.length === prev.length ? prev : next;
         });
     }, [availableGuildChannelIds, guildId]);
-
-    // "Entire Server" scope only makes sense when there is a guild. If the user navigates into a
-    // DM while guild scope is active, fall back to channel scope so the gallery doesn't get stuck
-    // trying to query a guild endpoint with a DM channel id.
-    useEffect(() => {
-        if (scope === "guild" && !guildId) setScope("channel");
-    }, [scope, guildId]);
 
     useEffect(() => {
         if (lastSessionKeyRef.current === sessionKey) return;

@@ -10,7 +10,7 @@ import {
 } from "../types";
 import { CacheService } from "./cacheService";
 
-type SearchResult = { items: MediaItem[]; totalResults: number; hasMore: boolean; nextOffset: number };
+type SearchResult = { items: MediaItem[]; totalResults: number; hasMore: boolean };
 type DiscordSearchHasType = "image" | "video" | "sound" | "file" | "embed";
 
 export class SearchService {
@@ -44,8 +44,7 @@ export class SearchService {
             return {
                 items: cached.items,
                 totalResults: cached.totalResults,
-                hasMore: cached.hasMore,
-                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length)
+                hasMore: cached.hasMore
             };
         }
 
@@ -56,7 +55,7 @@ export class SearchService {
             this.enqueueRequest(async () => {
                 try {
                     const result = await this.executeSearchRequest(params);
-                    CacheService.set(params, result.items, result.totalResults, result.hasMore, result.nextOffset);
+                    CacheService.set(params, result.items, result.totalResults, result.hasMore);
                     resolve(result);
                 } catch (err) {
                     reject(err);
@@ -116,9 +115,7 @@ export class SearchService {
                 return {
                     items,
                     totalResults: Math.max(primary.totalResults, embeds.totalResults, items.length),
-                    hasMore: primary.hasMore || embeds.hasMore,
-                    // Pagination is driven by the primary (attachment) page's hit count.
-                    nextOffset: primary.nextOffset
+                    hasMore: primary.hasMore || embeds.hasMore
                 };
             } catch (err) {
                 console.warn("[GalleryMode] Failed to include embed results in all-media query; continuing with attachments only.", err);
@@ -223,7 +220,7 @@ export class SearchService {
         const extractedItems: MediaItem[] = [];
 
         if (!response || !Array.isArray(response.messages)) {
-            return { items: [], totalResults: 0, hasMore: false, nextOffset: params.offset || 0 };
+            return { items: [], totalResults: 0, hasMore: false };
         }
 
         const hitGroups = response.messages;
@@ -305,18 +302,13 @@ export class SearchService {
 
         const totalResults = response.total_results ?? extractedItems.length;
         const currentOffset = params.offset || 0;
-        // Each group in response.messages is one matched message ("hit") plus its surrounding
-        // context messages. The number of groups is therefore the number of results consumed on
-        // this page, which is what Discord's `offset` pagination advances by.
         const returnedHits = hitGroups.length || messages.length;
-        const nextOffset = currentOffset + returnedHits;
-        const hasMore = returnedHits > 0 && nextOffset < totalResults;
+        const hasMore = returnedHits > 0 && currentOffset + returnedHits < totalResults;
 
         return {
             items: CacheService.deduplicateItems([], extractedItems),
             totalResults,
-            hasMore,
-            nextOffset
+            hasMore
         };
     }
 

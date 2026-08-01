@@ -60,8 +60,6 @@ export function HeaderButtonWrapper({ children }: { children?: React.ReactNode; 
 export default definePlugin({
     name: "GalleryMode",
     description: "Turns text channels and servers into a rich visual media gallery powered directly by Discord's native backend Search API.",
-    tags: ["Media", "Utility"],
-    searchTerms: ["gallery", "media", "images", "gifs", "videos", "search", "library"],
     authors: [
         {
             name: "K9 & ENI",
