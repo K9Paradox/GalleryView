@@ -1,11 +1,33 @@
 import { openImageModal, openUserProfile } from "@utils/discord";
 import { copyToClipboard } from "@utils/clipboard";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
-import { ContextMenuApi, Menu, NavigationRouter, React, useState } from "@webpack/common";
+import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
 import { MediaItem } from "../types";
 
-function copyWithToast(text: string, _toastMsg?: string) {
-    void copyToClipboard(text);
+function copyWithToast(text: string, toastMsg = "Copied to clipboard!") {
+    void copyToClipboard(text)
+        .then(() => showToast(toastMsg, Toasts.Type.SUCCESS))
+        .catch(() => showToast("Failed to copy", Toasts.Type.FAILURE));
+}
+
+async function downloadMedia(url: string, fallbackName: string) {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Download failed (${res.status})`);
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = fallbackName || "media";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(objectUrl);
+        showToast("Downloaded media", Toasts.Type.SUCCESS);
+    } catch (err) {
+        console.warn("[GalleryMode] Download failed:", err);
+        showToast("Download failed — open in browser to save", Toasts.Type.FAILURE);
+    }
 }
 
 interface MediaCardProps {
@@ -101,6 +123,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
                 )}
                 <div className="gm-modal-actions">
                     <button className="gm-action-btn primary" onClick={() => copyWithToast(item.url, "Copied media link!")}>Copy Link</button>
+                    <button className="gm-action-btn secondary" onClick={() => downloadMedia(item.url, item.filename || "media")}>Download</button>
                     <button className="gm-action-btn secondary" onClick={() => openExternal(item.url)}>Open Original</button>
                 </div>
             </ModalContent>
@@ -183,6 +206,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     <Menu.MenuItem id="gm-open" label="Open Preview" action={handleCardClick} />
                     <Menu.MenuItem id="gm-jump" label="Jump to Message" action={jumpToMessage} />
                     <Menu.MenuItem id="gm-copy-link" label="Copy Media Link" action={copyMediaLink} />
+                    <Menu.MenuItem id="gm-download" label="Download Media" action={() => downloadMedia(item.url, item.filename || "media")} />
                     <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => openExternal(item.url)} />
                     <Menu.MenuItem id="gm-author-profile" label={`View @${item.author.username}'s Profile`} action={openAuthorProfile} />
                     {item.content && (
@@ -307,7 +331,10 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     </div>
                 )}
                 <div className="gm-author-details">
-                    <span className="gm-author-name">{item.author.globalName || item.author.username}</span>
+                    <div className="gm-author-name-row">
+                        <span className="gm-author-name">{item.author.globalName || item.author.username}</span>
+                        {item.author.bot && <span className="gm-bot-badge">BOT</span>}
+                    </div>
                     <span className="gm-author-username">@{item.author.username}</span>
                 </div>
             </div>
