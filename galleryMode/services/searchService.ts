@@ -134,7 +134,7 @@ export class SearchService {
     ): Promise<SearchResult> {
         let endpoint: string;
         const queryParams: Record<string, any> = {
-            include_nsfw: true,
+            include_nsfw: params.nsfw ?? true,
             context_size: 0,
             offset: params.offset || 0,
             has: hasType
