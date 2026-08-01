@@ -1,8 +1,12 @@
 import { openImageModal, openUserProfile } from "@utils/discord";
-import { copyWithToast } from "@utils/misc";
+import { copyToClipboard } from "@utils/clipboard";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { ContextMenuApi, Menu, NavigationRouter, React, useState } from "@webpack/common";
 import { MediaItem } from "../types";
+
+function copyWithToast(text: string, _toastMsg?: string) {
+    void copyToClipboard(text);
+}
 
 interface MediaCardProps {
     item: MediaItem;
