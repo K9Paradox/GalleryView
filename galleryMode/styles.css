@@ -53,6 +53,13 @@
 
     /* Accent — follows the user's Discord/theme accent when one is exposed. */
     --gm-accent: var(--brand-experiment, #5865f2);
+
+    /* "On media" colours. Overlays that sit on top of a photo (type badge, date badge,
+       spoiler veil label, play button) must NOT follow the light/dark palette: the thing
+       behind them is the image, not the theme surface. These deliberately stay light in
+       both palettes and are never overridden by .gm-theme-light. */
+    --gm-on-media: #ffffff;
+    --gm-on-media-line: rgba(255, 255, 255, 0.25);
 }
 
 /* Light palette. Inverted lines/fills (dark hairlines over light surfaces) and
@@ -70,8 +77,9 @@
     --gm-scrim: rgba(0, 0, 0, 0.45);
     --gm-scrim-strong: rgba(0, 0, 0, 0.55);
     --gm-scrim-heavy: rgba(0, 0, 0, 0.72);
-    --gm-veil: rgba(232, 234, 238, 0.62);
-    --gm-veil-hover: rgba(232, 234, 238, 0.45);
+    /* Veils cover media, so they stay dark in light mode too. */
+    --gm-veil: rgba(12, 13, 16, 0.5);
+    --gm-veil-hover: rgba(12, 13, 16, 0.38);
     --gm-shadow: rgba(20, 24, 40, 0.22);
 
     --gm-text-strong: #0b0c0e;
@@ -95,13 +103,25 @@
 }
 
 /* Header Toggle Bar Button.
-   This button is mounted inside Discord's own header, OUTSIDE the gallery overlay, so it
-   cannot use the overlay-scoped tokens above. It instead inherits Discord's interactive
-   colours, which every theme (light, dark, custom) is required to define — that keeps the
-   icon legible on light themes, where the previous hardcoded near-white was invisible. */
+   Mounted inside Discord's own header, OUTSIDE the gallery overlay, so it cannot use the
+   overlay-scoped tokens above.
+
+   Previously this hardcoded a near-white, which vanished on light themes. Switching it to
+   --interactive-normal was also wrong: some themes leave that token at its dark-theme value,
+   so the icon ended up dark-on-dark or light-on-light.
+
+   `currentColor` is the reliable answer. The button inherits the colour of Discord's header
+   toolbar, which every theme is guaranteed to set to something legible against that toolbar,
+   because all of Discord's own icons sitting beside ours depend on it. */
 .gm-header-button {
-    color: var(--interactive-normal, currentColor) !important;
-    transition: color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
+    border: none !important;
+    background: transparent !important;
+    height: 24px;
+    min-width: 32px;
+    cursor: pointer;
+    color: currentColor !important;
+    opacity: 0.85;
+    transition: opacity 0.15s ease, color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -109,20 +129,21 @@
 }
 
 .gm-header-button:hover {
-    color: var(--interactive-hover, var(--header-primary, currentColor)) !important;
+    color: currentColor !important;
+    opacity: 1;
     transform: scale(1.05);
 }
 
-/* Fallback for themes that define neither variable: force adequate contrast against the
-   surrounding header by following the theme's own primary header text colour. */
 .gm-header-button svg {
-    color: inherit;
+    /* Inherit the button's resolved colour rather than re-resolving a variable. */
+    fill: currentColor;
 }
 
 .gm-header-button.active {
+    /* Blurple has adequate contrast against both light and dark header bars. */
     color: var(--brand-experiment, #5865f2) !important;
-    /* A soft glow reads as "off" on light themes, so pair it with a solid accent tint. */
-    filter: drop-shadow(0 0 6px rgba(88, 101, 242, 0.55));
+    opacity: 1;
+    filter: drop-shadow(0 0 5px rgba(88, 101, 242, 0.5));
 }
 
 /* Floating Glassmorphism Main Overlay Container */
@@ -600,8 +621,8 @@
     letter-spacing: 0.05em;
     background: var(--gm-scrim-heavy) !important;
     backdrop-filter: blur(8px);
-    color: var(--gm-text-strong) !important;
-    border: 1px solid var(--gm-line-strong) !important;
+    color: var(--gm-on-media) !important;
+    border: 1px solid var(--gm-on-media-line) !important;
 }
 
 .gm-type-badge.video {
@@ -627,13 +648,13 @@
     right: 8px;
     font-size: 12px;
     font-weight: 700;
-    color: var(--gm-text-strong) !important;
+    color: var(--gm-on-media) !important;
     background: var(--gm-scrim-heavy) !important;
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     padding: 4px 10px;
     border-radius: 6px;
-    border: 1px solid var(--gm-line-strong) !important;
+    border: 1px solid var(--gm-on-media-line) !important;
     pointer-events: none;
     transition: opacity 0.15s ease;
 }
@@ -1086,14 +1107,6 @@ video.gm-modal-media {
     margin-top: 14px;
 }
 
-
-.gm-header-button {
-    border: none !important;
-    background: transparent !important;
-    height: 24px;
-    min-width: 32px;
-    cursor: pointer;
-}
 
 /* ==========================================================================
    Focus management, date/sort controls, rendering performance
@@ -1631,7 +1644,7 @@ video.gm-modal-media {
     font-size: 11px;
     font-weight: 900;
     letter-spacing: 0.08em;
-    color: var(--gm-text-strong) !important;
+    color: var(--gm-on-media) !important;
     padding: 5px 12px;
     border-radius: 999px;
     background: var(--gm-scrim-strong);
@@ -1641,7 +1654,7 @@ video.gm-modal-media {
 .gm-spoiler-hint {
     font-size: 11px;
     font-weight: 600;
-    color: rgba(255, 255, 255, 0.75) !important;
+    color: rgba(255, 255, 255, 0.78) !important;
 }
 
 /* Hide the hover action bar while the card is still veiled — the only useful action is reveal. */

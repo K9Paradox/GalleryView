@@ -272,7 +272,11 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                     <Menu.MenuItem id="gm-download" label="Download Media" action={() => downloadMedia(item.url, item.filename || "media")} />
                     <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => openExternal(item.url)} />
                     <Menu.MenuItem id="gm-author-profile" label={`View @${item.author.username}'s Profile`} action={openAuthorProfile} />
-                    {item.content && (
+                    {/* MUST be a boolean guard. item.content is a string, so `item.content && ...`
+                        evaluates to "" for an empty message — and Discord's Menu API rejects
+                        string children with "Menu API only allows Items and groups of Items as
+                        children", which crashes the whole menu subtree. */}
+                    {!!item.content && (
                         <Menu.MenuItem id="gm-copy-text" label="Copy Message Text" action={() => copyWithToast(item.content!, "Copied message text!")} />
                     )}
                 </Menu.Menu>
@@ -353,7 +357,7 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                         <div className="gm-file-ext-badge">{item.fileExtension || (item.type === "audio" ? "AUDIO" : "FILE")}</div>
                         <div className="gm-file-icon-circle">{item.type === "audio" ? "🎵" : "📄"}</div>
                         <div className="gm-file-name-text">{item.filename || "Attachment File"}</div>
-                        {item.fileSize && <div className="gm-file-size-badge">{formatSize(item.fileSize)}</div>}
+                        {!!item.fileSize && <div className="gm-file-size-badge">{formatSize(item.fileSize)}</div>}
                     </div>
                 ) : hasError ? (
                     <div className="gm-file-card-preview">

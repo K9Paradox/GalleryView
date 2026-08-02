@@ -148,6 +148,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const lastAutoLoadRef = useRef<number>(0);
     // Consecutive pages that yielded no renderable cards (see fetchMedia).
     const barrenPagesRef = useRef<number>(0);
+    const deferredAutoLoadRef = useRef<number | null>(null);
+    // Lets the deferred timer call the newest closure rather than a stale captured one.
+    const loadNextPageRef = useRef<(source?: "auto" | "manual") => void>(() => { });
     // Cursor for the embed stream blended into the "all" filter. -1 means "exhausted, stop asking".
     const embedOffsetRef = useRef<number>(0);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
@@ -481,6 +484,18 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     };
 
+    /**
+     * Re-attempt an auto-load once the cooldown expires. Only one timer is ever pending; later
+     * calls keep the earliest deadline so a stream of observer events can't stack timers.
+     */
+    const scheduleDeferredAutoLoad = (delayMs: number) => {
+        if (deferredAutoLoadRef.current != null) return;
+        deferredAutoLoadRef.current = window.setTimeout(() => {
+            deferredAutoLoadRef.current = null;
+            loadNextPageRef.current("auto");
+        }, Math.max(0, delayMs) + 16);
+    };
+
     const loadNextPage = (source: "auto" | "manual" = "manual") => {
         if (!hasMore || loading || loadingMore || fetchingRef.current || error) return;
 
@@ -498,17 +513,38 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             if (container) {
                 const { scrollTop, scrollHeight, clientHeight } = container;
                 const isScrollable = scrollHeight > clientHeight + 32;
-                if (isScrollable && scrollHeight - (scrollTop + clientHeight) > clientHeight) return;
+                if (isScrollable && scrollHeight - (scrollTop + clientHeight) > clientHeight) {
+                    return;
+                }
             }
 
             // Rate-limit auto-loads so a layout reflow storm can't burn the search quota.
-            if (Date.now() - lastAutoLoadRef.current < AUTO_LOAD_COOLDOWN_MS) return;
+            //
+            // A plain `return` here used to strand the user: scrolling fast fires the observer
+            // once, the cooldown rejects it, and because IntersectionObserver only reports
+            // *changes* in intersection, no further callback arrives while the sentinel stays
+            // on screen — leaving a "Load More" button that scrolling never clears. Instead of
+            // dropping the request, defer it to when the cooldown expires.
+            const sinceLast = Date.now() - lastAutoLoadRef.current;
+            if (sinceLast < AUTO_LOAD_COOLDOWN_MS) {
+                scheduleDeferredAutoLoad(AUTO_LOAD_COOLDOWN_MS - sinceLast);
+                return;
+            }
             lastAutoLoadRef.current = Date.now();
         }
 
         // `offset` now tracks the next offset to request (see fetchMedia).
         void fetchMedia(offset, filterType, activeQuery, false);
     };
+
+    loadNextPageRef.current = loadNextPage;
+
+    useEffect(() => () => {
+        if (deferredAutoLoadRef.current != null) {
+            clearTimeout(deferredAutoLoadRef.current);
+            deferredAutoLoadRef.current = null;
+        }
+    }, []);
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -574,10 +610,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     };
 
     const handleScroll = () => {
-        const scrollTop = scrollContainerRef.current?.scrollTop || 0;
+        const container = scrollContainerRef.current;
+        const scrollTop = container?.scrollTop || 0;
         lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
         persistSession(sessionKey, scrollTop);
+
+        // Safety net for fast scrolling. IntersectionObserver only fires when intersection
+        // *changes*; if the user flings the list and the sentinel is already on screen when a
+        // load finishes, no new callback arrives and pagination stalls behind a Load More
+        // button. Checking proximity on scroll guarantees we notice. loadNextPage() re-applies
+        // its own cooldown and in-flight guards, so this cannot cause extra requests.
+        if (container && hasMore && !loading && !loadingMore && !error) {
+            const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
+            if (remaining < container.clientHeight) loadNextPageRef.current("auto");
+        }
     };
 
     const scrollToTop = () => {
@@ -705,6 +752,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
     }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedTypes, sortOrder]);
+
+    // After a page settles, the sentinel may still be on screen (short page, fast scroll, or a
+    // filtered-down result set). The observer won't re-fire because intersection didn't change,
+    // so re-evaluate once here. All the usual guards still apply inside loadNextPage.
+    useEffect(() => {
+        if (loading || loadingMore || error || !hasMore) return;
+        const container = scrollContainerRef.current;
+        if (!container) return;
+
+        const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
+        if (remaining >= container.clientHeight) return;
+
+        const timer = setTimeout(() => loadNextPageRef.current("auto"), AUTO_LOAD_COOLDOWN_MS);
+        return () => clearTimeout(timer);
+    }, [error, hasMore, loading, loadingMore, mediaItems.length]);
 
     // Keep one page ahead of the user at all times. When the current page settles, quietly warm
     // the next one into the cache so "Load More" / scrolling resolves instantly with no spinner.
@@ -866,14 +928,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             >
                                 This Channel
                             </button>
-                            {guildId && (
+                            {!!guildId && (
                                 <button className={`gm-scope-btn ${scope === "guild" ? "active" : ""}`} onClick={() => setScope("guild")}>
                                     Entire Server
                                 </button>
                             )}
                         </div>
 
-                        {guildId && scope === "guild" && (
+                        {!!guildId && scope === "guild" && (
                             <div className="gm-channel-select-wrap" ref={channelSelectRef}>
                                 <button
                                     className={`gm-scope-btn gm-channel-select-btn ${effectiveSelectedChannelIds.length > 0 ? "active" : ""}`}
@@ -949,7 +1011,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             </svg>
                         </button>
 
-                        {onClose && <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)">✕</button>}
+                        {!!onClose && <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)">✕</button>}
                     </div>
                 </div>
 
@@ -1001,7 +1063,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.currentTarget.value)}
                         />
-                        {searchQuery && (
+                        {!!searchQuery && (
                             <button type="button" className="gm-search-clear-btn" onClick={() => { setSearchQuery(""); setActiveQuery(""); }}>×</button>
                         )}
                         <button type="submit" className="gm-search-submit-btn">Search</button>
