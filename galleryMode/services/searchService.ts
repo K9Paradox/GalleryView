@@ -79,7 +79,62 @@ export class SearchService {
         });
     }
 
+    /**
+     * List threads under a channel, including ones the user has never opened.
+     *
+     * The client store only holds *active joined* threads, so a picker built from it shows
+     * almost nothing in a busy forum. Discord exposes the full set over REST:
+     *   - /channels/:id/threads/search covers active + archived for forum/media channels
+     *   - /channels/:id/threads/archived/public is the fallback for text channels
+     * Results are cached for the session; failures degrade to whatever the store knows.
+     */
+    private static threadListCache = new Map<string, { timestamp: number; threads: any[]; }>();
+    private static readonly THREAD_CACHE_TTL_MS = 2 * 60 * 1000;
+
+    public static async listThreads(channelId: string): Promise<any[]> {
+        const cached = this.threadListCache.get(channelId);
+        if (cached && Date.now() - cached.timestamp <= this.THREAD_CACHE_TTL_MS) return cached.threads;
+
+        const collected = new Map<string, any>();
+        const absorb = (list: any) => {
+            for (const thread of Array.isArray(list) ? list : []) {
+                if (thread?.id) collected.set(thread.id, thread);
+            }
+        };
+
+        // Forum/media channels: the thread *search* endpoint returns active and archived posts.
+        try {
+            await this.enforceRequestSpacing();
+            const response: any = await RestAPI.get({
+                url: `/channels/${channelId}/threads/search`,
+                query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 25 },
+                oldFormErrors: true
+            });
+            absorb((response?.body ?? response)?.threads);
+        } catch {
+            // Not a forum, or no permission — the archived endpoint below may still work.
+        }
+
+        // Text/announcement channels: public archived threads.
+        try {
+            await this.enforceRequestSpacing();
+            const response: any = await RestAPI.get({
+                url: `/channels/${channelId}/threads/archived/public`,
+                query: { limit: 25 },
+                oldFormErrors: true
+            });
+            absorb((response?.body ?? response)?.threads);
+        } catch {
+            // Fine — fall back to whatever the client store knows.
+        }
+
+        const threads = [...collected.values()];
+        this.threadListCache.set(channelId, { timestamp: Date.now(), threads });
+        return threads;
+    }
+
     public static resetNegativeCache(): void {
+        this.threadListCache.clear();
         this.emptyStreams.clear();
         this.rawResponseCache.clear();
     }

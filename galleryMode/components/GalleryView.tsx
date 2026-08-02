@@ -9,6 +9,7 @@ import {
     SelectedGuildStore,
     SettingsRouter,
     UserStore,
+    useStateFromStores,
     useEffect,
     useRef,
     useState
@@ -125,7 +126,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const motion: string = animations || "full";
     // Measured from Discord's live background so custom/light themes are handled, not guessed.
     const themeTone = useThemeTone();
-    const channelId = SelectedChannelStore?.getChannelId();
+    // Subscribe to the store rather than reading it once per render. Previously this was a bare
+    // getChannelId() call, so navigating between subthreads never re-rendered the gallery: the
+    // component kept the channel id it happened to mount with, which is why opening a subthread
+    // still showed the parent's media and the scope buttons looked "confused".
+    // (Called unconditionally — a conditional hook would violate the rules of hooks. The
+    // helper is always present in Vencord's webpack commons.)
+    const channelId: string | undefined = useStateFromStores(
+        [SelectedChannelStore],
+        () => SelectedChannelStore?.getChannelId()
+    );
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
     // NOTE: currentChannel.guild_id is undefined for DM / group-DM channels. We must NOT fall back
     // to SelectedGuildStore here — it returns the last-selected server from the left nav (which stays
@@ -251,10 +261,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     }, [guildId]);
 
-    // Threads/posts that live under the current thread's parent channel. Discord only keeps
-    // *joined/active* threads in the client store, so this is the set we can enumerate without
-    // extra API calls; archived ones are still reachable via the parent-wide search below.
-    const siblingThreads = React.useMemo(() => {
+    // Threads under the current host channel, from the client store. This only contains threads
+    // the user has actually joined/opened, which is why the picker used to look almost empty.
+    const storeThreads = React.useMemo(() => {
         if (!guildId || !threadHostId || !ActiveJoinedThreadsStore) return [];
         try {
             const byParent = ActiveJoinedThreadsStore.getActiveJoinedThreadsForGuild(guildId) || {};
@@ -263,13 +272,52 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
             return Object.values(entries)
                 .map((entry: any) => entry?.channel || entry)
-                .filter((channel: any) => channel?.id)
-                .sort((a: any, b: any) => String(a.name || "").localeCompare(String(b.name || "")));
+                .filter((channel: any) => channel?.id);
         } catch (err) {
             console.warn("[GalleryMode] Failed to read thread list", err);
             return [];
         }
     }, [guildId, threadHostId]);
+
+    // Threads fetched from Discord, covering ones the user has never opened (and archived ones).
+    const [fetchedThreads, setFetchedThreads] = useState<any[]>([]);
+
+    useEffect(() => {
+        if (!threadHostId) {
+            setFetchedThreads([]);
+            return;
+        }
+
+        let cancelled = false;
+        void SearchService.listThreads(threadHostId)
+            .then(threads => { if (!cancelled) setFetchedThreads(threads); })
+            .catch(() => { if (!cancelled) setFetchedThreads([]); });
+
+        return () => { cancelled = true; };
+    }, [threadHostId]);
+
+    // Union of both sources, most recently active first.
+    const siblingThreads = React.useMemo(() => {
+        const byId = new Map<string, any>();
+        for (const thread of [...fetchedThreads, ...storeThreads]) {
+            if (thread?.id) byId.set(thread.id, thread);
+        }
+        // Always include the thread the user is currently in, even if neither source lists it.
+        if (inThread && currentChannel?.id && !byId.has(currentChannel.id)) {
+            byId.set(currentChannel.id, currentChannel);
+        }
+
+        return [...byId.values()].sort((a: any, b: any) =>
+            String(a.name || "").localeCompare(String(b.name || ""))
+        );
+    }, [fetchedThreads, storeThreads, inThread, currentChannel]);
+
+    // Stable list of ids for the search params, so buildSearchParams doesn't depend on object
+    // identity churn from the two thread sources.
+    const threadChannelIds = React.useMemo(
+        () => siblingThreads.map((thread: any) => thread.id),
+        [siblingThreads]
+    );
 
     const availableGuildChannelIds = React.useMemo(() => new Set(guildChannels.map((channel: any) => channel.id)), [guildChannels]);
 
@@ -289,10 +337,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return effectiveSelectedChannelIds.length > 1 ? `#${firstName} +${effectiveSelectedChannelIds.length - 1}` : `#${firstName}`;
         }
 
-        if (scope === "parent") return `🧵 All threads in #${threadHostChannel?.name || "channel"}`;
+        if (scope === "parent") {
+            const host = threadHostChannel?.name || "channel";
+            if (selectedThreadIds.length === 1) {
+                const picked = siblingThreads.find((thread: any) => thread.id === selectedThreadIds[0]);
+                return `🧵 ${picked?.name || "1 thread"}`;
+            }
+            if (selectedThreadIds.length > 1) return `🧵 ${selectedThreadIds.length} threads in #${host}`;
+            return `🧵 All threads in #${host}`;
+        }
         if (scope === "guild") return "Entire Server";
+        // In a thread, name the thread itself — showing the parent channel here is what made it
+        // look like the gallery had ignored the subthread.
+        if (inThread) return `🧵 ${currentChannel?.name || "Thread"}`;
         return guildId ? `#${currentChannelName}` : currentChannelName;
-    }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope, threadHostChannel]);
+    }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, inThread, scope, selectedThreadIds, siblingThreads, threadHostChannel]);
 
     const authorSuggestions = React.useMemo(() => {
         const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
@@ -418,15 +477,25 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         let scopedChannelIds: string[] | undefined;
 
         if (scope === "parent") {
-            // Every enumerable thread under the parent, plus the parent itself so messages
-            // posted directly in it (non-forum channels) are included.
-            const ids = siblingThreads.map((thread: any) => thread.id);
-            if (threadHostId && !isThreadParentChannel(threadHostChannel)) ids.push(threadHostId);
-            if (selectedThreadIds.length > 0) {
-                scopedChannelIds = selectedThreadIds;
-            } else {
-                scopedChannelIds = ids.length > 0 ? ids : undefined;
+            // Every known thread under the host channel, plus the host itself so messages posted
+            // directly in it are included (forums hold no messages of their own, so they are
+            // excluded there).
+            //
+            // CRITICAL: this list must never be left undefined. `channelIds: undefined` means
+            // "search the whole guild", which is why "All Threads" was returning the entire
+            // server's media. Falling back to the host id alone keeps the search scoped even
+            // when no individual threads are known yet.
+            const ids = selectedThreadIds.length > 0
+                ? [...selectedThreadIds]
+                : threadChannelIds.slice();
+
+            if (threadHostId && !isThreadParentChannel(threadHostChannel) && !ids.includes(threadHostId)) {
+                ids.push(threadHostId);
             }
+
+            scopedChannelIds = ids.length > 0
+                ? ids
+                : (threadHostId ? [threadHostId] : undefined);
         } else if (scope === "guild") {
             scopedChannelIds = effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined;
         } else if (target.activeGuildId && target.activeChannelId) {
@@ -801,6 +870,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         if (scope === "parent" && (!guildId || !threadHostId)) setScope("channel");
     }, [scope, guildId, threadHostId]);
 
+    // Drop thread selections when the host channel changes, so picks made in one forum can't
+    // leak into another (they would silently scope the search to unrelated channel ids).
+    const lastThreadHostRef = useRef<string | undefined>(threadHostId);
+    useEffect(() => {
+        if (lastThreadHostRef.current === threadHostId) return;
+        lastThreadHostRef.current = threadHostId;
+        setSelectedThreadIds([]);
+        setShowThreadDropdown(false);
+    }, [threadHostId]);
+
+    // Prune selections that are no longer present in the resolved thread list.
+    useEffect(() => {
+        if (selectedThreadIds.length === 0 || threadChannelIds.length === 0) return;
+        const known = new Set(threadChannelIds);
+        setSelectedThreadIds(prev => {
+            const next = prev.filter(id => known.has(id));
+            return next.length === prev.length ? prev : next;
+        });
+    }, [threadChannelIds, selectedThreadIds.length]);
+
     useEffect(() => {
         if (lastSessionKeyRef.current === sessionKey) return;
 
@@ -878,7 +967,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedThreadIds, selectedTypes, sortOrder]);
+    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedThreadIds, selectedTypes, sortOrder, threadChannelIds]);
 
     // After a page settles, the sentinel may still be on screen (short page, fast scroll, or a
     // filtered-down result set). The observer won't re-fire because intersection didn't change,
@@ -1099,15 +1188,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                 {showThreadDropdown && (
                                     <div className="gm-channel-dropdown">
                                         <div className="gm-dropdown-title">
-                                            Threads in #{threadHostChannel?.name || "channel"} ({siblingThreads.length} loaded)
+                                            Threads in #{threadHostChannel?.name || "channel"} ({siblingThreads.length})
                                         </div>
                                         {selectedThreadIds.length > 0 && (
                                             <button className="gm-dropdown-link" onClick={() => setSelectedThreadIds([])}>Clear selected threads</button>
                                         )}
                                         {siblingThreads.length === 0 ? (
                                             <div className="gm-dropdown-empty">
-                                                No active threads are loaded in this client. Searching the parent channel instead —
-                                                open a thread once to have it appear here.
+                                                No threads found in this channel yet. The search is scoped to
+                                                #{threadHostChannel?.name || "this channel"} in the meantime.
                                             </div>
                                         ) : siblingThreads.map((thread: any) => (
                                             <label key={thread.id} className="gm-channel-option">
