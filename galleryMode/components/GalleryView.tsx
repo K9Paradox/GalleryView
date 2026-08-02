@@ -1,4 +1,5 @@
 import {
+    ActiveJoinedThreadsStore,
     ChannelStore,
     GuildChannelStore,
     GuildMemberStore,
@@ -32,16 +33,37 @@ interface AuthorPill {
 }
 
 type FilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
-type ScopeType = "channel" | "guild";
+// "channel" = the current channel (or the current thread when one is open)
+// "parent"  = every thread/post under the current thread's parent channel
+// "guild"   = the whole server
+type ScopeType = "channel" | "parent" | "guild";
 
 const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
+// Extra spacing enforced between auto-loads that were NOT driven by the user actively
+// scrolling. Guards against the trigger paths (observer, scroll handler, post-load re-check,
+// deferred retry) re-arming each other into a free-running pagination loop.
+const IDLE_AUTO_LOAD_COOLDOWN_MS = 2500;
 // Upper bound on pages auto-skipped when a filter matches nothing, so a channel with thousands
 // of non-matching messages can't loop indefinitely.
 const MAX_BARREN_PAGES = 6;
 const SEARCHABLE_GUILD_CHANNEL_TYPES = new Set([0, 5, 10, 11, 12, 15, 16]);
+// Discord's thread channel types: 10 = announcement thread, 11 = public thread,
+// 12 = private thread. Forum (15) and media (16) channels hold "posts", which are
+// themselves type-11 threads parented to the forum channel.
+const THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
+// Channel types that contain threads/posts rather than messages of their own.
+const THREAD_PARENT_CHANNEL_TYPES = new Set([15, 16]);
+
+function isThreadChannel(channel: any): boolean {
+    return !!channel && THREAD_CHANNEL_TYPES.has(channel.type);
+}
+
+function isThreadParentChannel(channel: any): boolean {
+    return !!channel && THREAD_PARENT_CHANNEL_TYPES.has(channel.type);
+}
 
 function normaliseGuildChannels(raw: any): any[] {
     const buckets = [raw?.SELECTABLE, raw?.VOCAL, raw?.TEXTUAL, raw?.THREADS].filter(Boolean);
@@ -76,7 +98,8 @@ function createDefaultSessionState(initialQuery: string, defaultCardSize?: strin
         afterDate: "",
         sortOrder: "desc",
         selectedAuthors: [],
-        selectedChannelIds: []
+        selectedChannelIds: [],
+        selectedThreadIds: []
     };
 }
 
@@ -109,6 +132,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // selected even while browsing DMs), which would make us query a guild search endpoint with a DM
     // channel_id and fail to load any media. Only use the fallback when there is genuinely no channel.
     const guildId = currentChannel?.guild_id || (currentChannel ? undefined : SelectedGuildStore?.getGuildId());
+
+    // Thread awareness. When the user is inside a thread (or a forum/media post, which is just
+    // a thread parented to the forum channel), the gallery should default to that thread but
+    // also offer "all threads in this channel".
+    const inThread = isThreadChannel(currentChannel);
+    const threadParentId: string | undefined = inThread ? currentChannel?.parent_id : undefined;
+    const threadParentChannel = threadParentId ? ChannelStore?.getChannel(threadParentId) : null;
+    // The channel whose threads we enumerate: the thread's parent, or the forum itself when
+    // the user is looking at the forum channel rather than an individual post.
+    const threadHostChannel = threadParentChannel ?? (isThreadParentChannel(currentChannel) ? currentChannel : null);
+    const threadHostId: string | undefined = threadHostChannel?.id;
     const sessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
     const initialSession = mergeSessionState(CacheService.getSession(sessionKey), initialQuery, defaultCardSize || "240px");
 
@@ -132,6 +166,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [selectedAuthors, setSelectedAuthors] = useState<AuthorPill[]>(initialSession.selectedAuthors || []);
     const [showChannelDropdown, setShowChannelDropdown] = useState<boolean>(false);
     const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(initialSession.selectedChannelIds || []);
+    const [selectedThreadIds, setSelectedThreadIds] = useState<string[]>(initialSession.selectedThreadIds || []);
+    const [showThreadDropdown, setShowThreadDropdown] = useState<boolean>(false);
     const [beforeDate, setBeforeDate] = useState<string>(initialSession.beforeDate || "");
     const [afterDate, setAfterDate] = useState<string>(initialSession.afterDate || "");
     const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
@@ -142,6 +178,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const observerTargetRef = useRef<HTMLDivElement>(null);
     const channelSelectRef = useRef<HTMLDivElement>(null);
+    const threadSelectRef = useRef<HTMLDivElement>(null);
     const authorInputRef = useRef<HTMLDivElement>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
@@ -149,6 +186,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Consecutive pages that yielded no renderable cards (see fetchMedia).
     const barrenPagesRef = useRef<number>(0);
     const deferredAutoLoadRef = useRef<number | null>(null);
+    // Timestamp of the last real user scroll, used to distinguish "user is browsing" from
+    // "the layout settled and the sentinel happens to be visible".
+    const lastUserScrollRef = useRef<number>(0);
     // Lets the deferred timer call the newest closure rather than a stale captured one.
     const loadNextPageRef = useRef<(source?: "auto" | "manual") => void>(() => { });
     // Cursor for the embed stream blended into the "all" filter. -1 means "exhausted, stop asking".
@@ -177,7 +217,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         afterDate,
         sortOrder,
         selectedAuthors,
-        selectedChannelIds
+        selectedChannelIds,
+        selectedThreadIds
     });
 
     mediaItemsRef.current = mediaItems;
@@ -196,7 +237,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         afterDate,
         sortOrder,
         selectedAuthors,
-        selectedChannelIds
+        selectedChannelIds,
+        selectedThreadIds
     };
 
     const guildChannels = React.useMemo(() => {
@@ -208,6 +250,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return [];
         }
     }, [guildId]);
+
+    // Threads/posts that live under the current thread's parent channel. Discord only keeps
+    // *joined/active* threads in the client store, so this is the set we can enumerate without
+    // extra API calls; archived ones are still reachable via the parent-wide search below.
+    const siblingThreads = React.useMemo(() => {
+        if (!guildId || !threadHostId || !ActiveJoinedThreadsStore) return [];
+        try {
+            const byParent = ActiveJoinedThreadsStore.getActiveJoinedThreadsForGuild(guildId) || {};
+            const entries = byParent[threadHostId];
+            if (!entries) return [];
+
+            return Object.values(entries)
+                .map((entry: any) => entry?.channel || entry)
+                .filter((channel: any) => channel?.id)
+                .sort((a: any, b: any) => String(a.name || "").localeCompare(String(b.name || "")));
+        } catch (err) {
+            console.warn("[GalleryMode] Failed to read thread list", err);
+            return [];
+        }
+    }, [guildId, threadHostId]);
 
     const availableGuildChannelIds = React.useMemo(() => new Set(guildChannels.map((channel: any) => channel.id)), [guildChannels]);
 
@@ -227,9 +289,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return effectiveSelectedChannelIds.length > 1 ? `#${firstName} +${effectiveSelectedChannelIds.length - 1}` : `#${firstName}`;
         }
 
+        if (scope === "parent") return `🧵 All threads in #${threadHostChannel?.name || "channel"}`;
         if (scope === "guild") return "Entire Server";
         return guildId ? `#${currentChannelName}` : currentChannelName;
-    }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope]);
+    }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope, threadHostChannel]);
 
     const authorSuggestions = React.useMemo(() => {
         const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
@@ -288,7 +351,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             afterDate: snapshot.afterDate,
             sortOrder: snapshot.sortOrder,
             selectedAuthors: snapshot.selectedAuthors,
-            selectedChannelIds: snapshot.selectedChannelIds
+            selectedChannelIds: snapshot.selectedChannelIds,
+            selectedThreadIds: snapshot.selectedThreadIds
         });
     }, [sessionKey]);
 
@@ -323,6 +387,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setSelectedAuthors(next.selectedAuthors || []);
         setShowChannelDropdown(false);
         setSelectedChannelIds(next.selectedChannelIds || []);
+        setSelectedThreadIds(next.selectedThreadIds || []);
+        setShowThreadDropdown(false);
     }, [defaultCardSize, initialQuery]);
 
     /** Resolve the live Discord target. Returns null when there is nothing searchable. */
@@ -341,22 +407,55 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         filter: FilterType,
         query: string,
         embedOffset: number
-    ): SearchParameters => ({
-        channelId: scope === "channel" ? target.activeChannelId : undefined,
-        guildId: target.activeGuildId,
-        channelIds: scope === "guild" && effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined,
-        filterType: filter,
-        filterTypes: selectedTypes.length > 1 ? selectedTypes : undefined,
-        query,
-        authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
-        offset: fetchOffset,
-        embedOffset,
-        limit: PAGE_SIZE,
-        nsfw,
-        beforeDate: beforeDate || undefined,
-        afterDate: afterDate || undefined,
-        sortOrder
-    });
+    ): SearchParameters => {
+        // Which channel ids the search should be constrained to.
+        //
+        // Threads are the subtle case. A thread has its own channel id, but Discord's
+        // /channels/:id/messages/search endpoint rejects thread surfaces (code 50024), so a
+        // thread must be searched via the GUILD endpoint with channel_id set to the thread.
+        // Passing `channelId` here would route us to the channel endpoint, which is what made
+        // threads error out and fall back to the wrong results.
+        let scopedChannelIds: string[] | undefined;
+
+        if (scope === "parent") {
+            // Every enumerable thread under the parent, plus the parent itself so messages
+            // posted directly in it (non-forum channels) are included.
+            const ids = siblingThreads.map((thread: any) => thread.id);
+            if (threadHostId && !isThreadParentChannel(threadHostChannel)) ids.push(threadHostId);
+            if (selectedThreadIds.length > 0) {
+                scopedChannelIds = selectedThreadIds;
+            } else {
+                scopedChannelIds = ids.length > 0 ? ids : undefined;
+            }
+        } else if (scope === "guild") {
+            scopedChannelIds = effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined;
+        } else if (target.activeGuildId && target.activeChannelId) {
+            // "This channel"/"This thread" inside a guild. Always go through the guild endpoint
+            // constrained to the single channel id: it accepts thread, forum and media surfaces,
+            // whereas the per-channel endpoint returns 50024 for several of them.
+            scopedChannelIds = [target.activeChannelId];
+        }
+
+        // Only use the channel endpoint for real DM/group-DM surfaces, which have no guild.
+        const useChannelEndpoint = scope === "channel" && !target.activeGuildId;
+
+        return {
+            channelId: useChannelEndpoint ? target.activeChannelId : undefined,
+            guildId: target.activeGuildId,
+            channelIds: scopedChannelIds,
+            filterType: filter,
+            filterTypes: selectedTypes.length > 1 ? selectedTypes : undefined,
+            query,
+            authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
+            offset: fetchOffset,
+            embedOffset,
+            limit: PAGE_SIZE,
+            nsfw,
+            beforeDate: beforeDate || undefined,
+            afterDate: afterDate || undefined,
+            sortOrder
+        };
+    };
 
     const fetchMedia = async (
         fetchOffset: number,
@@ -454,7 +553,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 afterDate,
                 sortOrder,
                 selectedAuthors,
-                selectedChannelIds: effectiveSelectedChannelIds
+                selectedChannelIds: effectiveSelectedChannelIds,
+                selectedThreadIds
             });
         } catch (err: any) {
             if (requestId !== latestRequestRef.current) return;
@@ -480,6 +580,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 setLoading(false);
                 setLoadingMore(false);
                 fetchingRef.current = false;
+                // Re-stamp so the auto-load cooldown counts from completion, not from the
+                // moment the request was issued.
+                lastAutoLoadRef.current = Date.now();
             }
         }
     };
@@ -525,9 +628,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             // *changes* in intersection, no further callback arrives while the sentinel stays
             // on screen — leaving a "Load More" button that scrolling never clears. Instead of
             // dropping the request, defer it to when the cooldown expires.
+            //
+            // The cooldown is measured from when the previous page FINISHED, not when it
+            // started. Measuring from the start meant a ~350ms request only left ~350ms of
+            // real gap, and the several trigger paths kept re-arming each other into a
+            // free-running loop that reliably tripped Discord's 429.
+            //
+            // A longer cooldown also applies when the user isn't actively scrolling, so an
+            // idle gallery sitting near the bottom cannot quietly page through a whole server.
+            const scrolledRecently = Date.now() - lastUserScrollRef.current < 1200;
+            const requiredGap = scrolledRecently ? AUTO_LOAD_COOLDOWN_MS : IDLE_AUTO_LOAD_COOLDOWN_MS;
             const sinceLast = Date.now() - lastAutoLoadRef.current;
-            if (sinceLast < AUTO_LOAD_COOLDOWN_MS) {
-                scheduleDeferredAutoLoad(AUTO_LOAD_COOLDOWN_MS - sinceLast);
+
+            if (sinceLast < requiredGap) {
+                scheduleDeferredAutoLoad(requiredGap - sinceLast);
                 return;
             }
             lastAutoLoadRef.current = Date.now();
@@ -580,6 +694,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         });
     };
 
+    const toggleThreadSelection = (id: string) => {
+        setSelectedThreadIds(prev => prev.includes(id) ? prev.filter(threadId => threadId !== id) : [...prev, id]);
+    };
+
     const toggleChannelSelection = (id: string) => {
         setSelectedChannelIds(prev => prev.includes(id) ? prev.filter(channelId => channelId !== id) : [...prev, id]);
     };
@@ -606,12 +724,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setAuthorMenuDismissed(false);
         setSelectedAuthors([]);
         setSelectedChannelIds([]);
+        setSelectedThreadIds([]);
         setShowChannelDropdown(false);
+        setShowThreadDropdown(false);
     };
 
     const handleScroll = () => {
         const container = scrollContainerRef.current;
         const scrollTop = container?.scrollTop || 0;
+        // Only count it as user activity if the position actually moved.
+        if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) lastUserScrollRef.current = Date.now();
         lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
         persistSession(sessionKey, scrollTop);
@@ -621,7 +743,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         // load finishes, no new callback arrives and pagination stalls behind a Load More
         // button. Checking proximity on scroll guarantees we notice. loadNextPage() re-applies
         // its own cooldown and in-flight guards, so this cannot cause extra requests.
-        if (container && hasMore && !loading && !loadingMore && !error) {
+        if (container && hasMore && !loading && !loadingMore && !error && !fetchingRef.current) {
             const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
             if (remaining < container.clientHeight) loadNextPageRef.current("auto");
         }
@@ -653,6 +775,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             const target = e.target as Node | null;
             if (!target) return;
             if (channelSelectRef.current && !channelSelectRef.current.contains(target)) setShowChannelDropdown(false);
+            if (threadSelectRef.current && !threadSelectRef.current.contains(target)) setShowThreadDropdown(false);
             if (authorInputRef.current && !authorInputRef.current.contains(target)) setAuthorMenuDismissed(true);
         };
 
@@ -673,7 +796,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // trying to query a guild endpoint with a DM channel id.
     useEffect(() => {
         if (scope === "guild" && !guildId) setScope("channel");
-    }, [scope, guildId]);
+        // "All threads" is only valid while a thread host exists; navigating to a plain
+        // channel or DM must fall back rather than leaving an unsatisfiable scope.
+        if (scope === "parent" && (!guildId || !threadHostId)) setScope("channel");
+    }, [scope, guildId, threadHostId]);
 
     useEffect(() => {
         if (lastSessionKeyRef.current === sessionKey) return;
@@ -718,6 +844,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         searchQuery,
         selectedAuthors,
         selectedChannelIds,
+        selectedThreadIds,
         selectedTypes,
         sessionKey,
         sortOrder,
@@ -751,7 +878,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedTypes, sortOrder]);
+    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedThreadIds, selectedTypes, sortOrder]);
 
     // After a page settles, the sentinel may still be on screen (short page, fast scroll, or a
     // filtered-down result set). The observer won't re-fire because intersection didn't change,
@@ -763,6 +890,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         const remaining = container.scrollHeight - (container.scrollTop + container.clientHeight);
         if (remaining >= container.clientHeight) return;
+
+        // Only continue automatically while the content still doesn't fill the viewport (the
+        // genuinely stuck case this exists for) or the user is actively scrolling. Otherwise
+        // leave the "Load More" button and let them ask — an idle gallery parked at the bottom
+        // must not keep paging through the server on its own.
+        const isScrollable = container.scrollHeight > container.clientHeight + 32;
+        const scrolledRecently = Date.now() - lastUserScrollRef.current < 1200;
+        if (isScrollable && !scrolledRecently) return;
 
         const timer = setTimeout(() => loadNextPageRef.current("auto"), AUTO_LOAD_COOLDOWN_MS);
         return () => clearTimeout(timer);
@@ -833,6 +968,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         if (e.key !== "Escape") return;
         if (showChannelDropdown) {
             setShowChannelDropdown(false);
+            return;
+        }
+        if (showThreadDropdown) {
+            setShowThreadDropdown(false);
             return;
         }
         if (authorMenuOpen) {
@@ -926,14 +1065,64 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     setShowChannelDropdown(false);
                                 }}
                             >
-                                This Channel
+                                {inThread ? "This Thread" : "This Channel"}
                             </button>
+                            {/* Only meaningful when the current channel is a thread/post, or the
+                                user is viewing a forum/media channel that contains posts. */}
+                            {!!guildId && !!threadHostId && (
+                                <button
+                                    className={`gm-scope-btn ${scope === "parent" ? "active" : ""}`}
+                                    onClick={() => {
+                                        setScope("parent");
+                                        setShowChannelDropdown(false);
+                                    }}
+                                    title={`Search every thread in #${threadHostChannel?.name || "this channel"}`}
+                                >
+                                    All Threads
+                                </button>
+                            )}
                             {!!guildId && (
                                 <button className={`gm-scope-btn ${scope === "guild" ? "active" : ""}`} onClick={() => setScope("guild")}>
                                     Entire Server
                                 </button>
                             )}
                         </div>
+
+                        {!!guildId && scope === "parent" && (
+                            <div className="gm-channel-select-wrap" ref={threadSelectRef}>
+                                <button
+                                    className={`gm-scope-btn gm-channel-select-btn ${selectedThreadIds.length > 0 ? "active" : ""}`}
+                                    onClick={() => setShowThreadDropdown(value => !value)}
+                                >
+                                    🧵 {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} Threads` : "All Threads"} ▼
+                                </button>
+                                {showThreadDropdown && (
+                                    <div className="gm-channel-dropdown">
+                                        <div className="gm-dropdown-title">
+                                            Threads in #{threadHostChannel?.name || "channel"} ({siblingThreads.length} loaded)
+                                        </div>
+                                        {selectedThreadIds.length > 0 && (
+                                            <button className="gm-dropdown-link" onClick={() => setSelectedThreadIds([])}>Clear selected threads</button>
+                                        )}
+                                        {siblingThreads.length === 0 ? (
+                                            <div className="gm-dropdown-empty">
+                                                No active threads are loaded in this client. Searching the parent channel instead —
+                                                open a thread once to have it appear here.
+                                            </div>
+                                        ) : siblingThreads.map((thread: any) => (
+                                            <label key={thread.id} className="gm-channel-option">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedThreadIds.includes(thread.id)}
+                                                    onChange={() => toggleThreadSelection(thread.id)}
+                                                />
+                                                <span>{thread.name || "Untitled thread"}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         {!!guildId && scope === "guild" && (
                             <div className="gm-channel-select-wrap" ref={channelSelectRef}>

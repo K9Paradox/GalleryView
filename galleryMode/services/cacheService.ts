@@ -8,7 +8,8 @@ export interface GallerySessionState {
     scrollTop: number;
     filterType: "all" | "image" | "video" | "embed" | "file" | "audio";
     selectedTypes?: Array<"all" | "image" | "video" | "embed" | "file" | "audio">;
-    scope: "channel" | "guild";
+    // "parent" = every thread under the current thread's parent channel.
+    scope: "channel" | "parent" | "guild";
     searchQuery: string;
     activeQuery: string;
     cardMinWidth?: string;
@@ -17,6 +18,7 @@ export interface GallerySessionState {
     sortOrder?: GallerySortOrder;
     selectedAuthors?: Array<{ id: string; name: string }>;
     selectedChannelIds?: string[];
+    selectedThreadIds?: string[];
 }
 
 export class CacheService {

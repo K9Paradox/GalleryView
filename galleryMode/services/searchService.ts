@@ -67,6 +67,10 @@ export class SearchService {
      */
     public static prefetchMedia(params: SearchParameters): void {
         if (this.getRateLimitState().isRateLimited) return;
+        // Back off speculative work whenever Discord has recently throttled us. requestIntervalMs
+        // only rises above the base value after a 429, so this stops the prefetch from adding a
+        // third request per page at exactly the moment we're already over budget.
+        if (this.requestIntervalMs > this.BASE_REQUEST_INTERVAL_MS) return;
         if (CacheService.get(params)) return;
         if (this.inFlightRequests.has(CacheService.getCacheKey(params))) return;
 

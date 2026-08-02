@@ -267,6 +267,16 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const handleCardClick = () => {
         const previewUrl = firstSafeMediaUrl(item.proxyUrl, item.url);
 
+        // Drop focus from the card before handing off to Discord's image modal. The modal marks
+        // the page behind it aria-hidden; if our card still holds focus inside that subtree,
+        // Chromium logs "Blocked aria-hidden on an element because its descendant retained
+        // focus". Blurring first keeps the accessibility tree valid and silences the warning.
+        try {
+            (document.activeElement as HTMLElement | null)?.blur?.();
+        } catch {
+            // Non-fatal; the modal still opens.
+        }
+
         if ((item.type === "image" || item.type === "gif" || item.type === "embed") && previewUrl) {
             try {
                 // Current Vencord signature: openImageModal(item, props?) where item carries url/original/dimensions.
