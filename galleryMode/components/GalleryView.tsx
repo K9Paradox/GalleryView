@@ -31,6 +31,9 @@ type FilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
 type ScopeType = "channel" | "guild";
 
 const PAGE_SIZE = 25;
+// Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
+// clicks bypass this.
+const AUTO_LOAD_COOLDOWN_MS = 700;
 const SEARCHABLE_GUILD_CHANNEL_TYPES = new Set([0, 5, 10, 11, 12, 15, 16]);
 
 function normaliseGuildChannels(raw: any): any[] {
@@ -128,6 +131,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const authorInputRef = useRef<HTMLDivElement>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
+    const lastAutoLoadRef = useRef<number>(0);
+    // Cursor for the embed stream blended into the "all" filter. -1 means "exhausted, stop asking".
+    const embedOffsetRef = useRef<number>(0);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
     const lastSessionKeyRef = useRef<string>(sessionKey);
     // Track the latest scroll top in a ref. During unmount React nulls DOM refs, so reading
@@ -302,6 +308,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         query: string,
         isReset = false
     ) => {
+        if (isReset) embedOffsetRef.current = 0;
         if (fetchingRef.current && !isReset) return;
 
         const requestId = ++latestRequestRef.current;
@@ -336,6 +343,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             query,
             authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
             offset: fetchOffset,
+            embedOffset: embedOffsetRef.current,
             limit: PAGE_SIZE,
             nsfw,
             beforeDate: beforeDate || undefined,
@@ -351,6 +359,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             // number of results actually returned, not a fixed PAGE_SIZE step. This prevents
             // skipped media when a page returns fewer results than PAGE_SIZE.
             const nextOffset = res.nextOffset ?? (fetchOffset + PAGE_SIZE);
+            if (res.nextEmbedOffset !== undefined) embedOffsetRef.current = res.nextEmbedOffset;
 
             const updatedItems = isReset ? res.items : CacheService.deduplicateItems(mediaItemsRef.current, res.items);
             mediaItemsRef.current = updatedItems;
@@ -403,8 +412,27 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     };
 
-    const loadNextPage = () => {
+    const loadNextPage = (source: "auto" | "manual" = "manual") => {
         if (!hasMore || loading || loadingMore || fetchingRef.current || error) return;
+
+        if (source === "auto") {
+            const container = scrollContainerRef.current;
+            // Guard against runaway auto-pagination. In masonry mode the grid can briefly be
+            // shorter than the viewport while images are still decoding, which puts the sentinel
+            // permanently on screen and chain-fires page after page until Discord rate-limits us.
+            // Only auto-load once the content is genuinely taller than the scroll port and the
+            // user has actually scrolled into the lower part of it.
+            if (container) {
+                const { scrollTop, scrollHeight, clientHeight } = container;
+                if (scrollHeight <= clientHeight + 32) return;
+                if (scrollHeight - (scrollTop + clientHeight) > clientHeight) return;
+            }
+
+            // Rate-limit auto-loads so a layout reflow storm can't burn the search quota.
+            if (Date.now() - lastAutoLoadRef.current < AUTO_LOAD_COOLDOWN_MS) return;
+            lastAutoLoadRef.current = Date.now();
+        }
+
         // `offset` now tracks the next offset to request (see fetchMedia).
         void fetchMedia(offset, filterType, activeQuery, false);
     };
@@ -565,6 +593,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         latestRequestRef.current++;
         fetchingRef.current = false;
         setOffset(0);
+        embedOffsetRef.current = 0;
         setMediaItems([]);
         mediaItemsRef.current = [];
         setHasMore(true);
@@ -579,9 +608,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         const observer = new IntersectionObserver(
             entries => {
-                if (entries[0]?.isIntersecting) loadNextPage();
+                if (entries[0]?.isIntersecting) loadNextPage("auto");
             },
-            { threshold: 0.1, root, rootMargin: "500px" }
+            // 500px of pre-fetch margin was aggressive enough that a half-rendered masonry
+            // column kept the sentinel inside the root. 250px still hides the load from the
+            // user but needs real scrolling to trigger.
+            { threshold: 0, root, rootMargin: "250px" }
         );
 
         observer.observe(target);
@@ -849,7 +881,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         </div>
                     )}
                     {!loading && !loadingMore && !error && mediaItems.length > 0 && hasMore && (
-                        <button className="gm-load-more-btn" onClick={loadNextPage}>Load More</button>
+                        <button className="gm-load-more-btn" onClick={() => loadNextPage("manual")}>Load More</button>
                     )}
                     {!loading && !loadingMore && !hasMore && mediaItems.length > 0 && (
                         <div className="gm-end-state">End of results</div>

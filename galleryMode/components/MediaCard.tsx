@@ -222,6 +222,17 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const typeLabel = (item.type || "file").toUpperCase();
     const avatar = avatarUrl(item);
 
+    // Reserve the final box before the bytes arrive. Discord's search payload already tells us the
+    // natural width/height of attachments and most embeds, so in masonry mode we can pin the exact
+    // aspect ratio up front instead of letting each card grow from 0px to its real height as images
+    // decode — that growth is what makes the masonry grid "spaz out" and re-trigger infinite scroll.
+    const naturalRatio = item.width && item.height ? item.width / item.height : undefined;
+    const previewStyle = naturalRatio
+        // Clamp to the same bounds the CSS enforces (max-height: 72vh) so a 1x5000 image can't
+        // create a mile-tall column.
+        ? { aspectRatio: `${Math.min(Math.max(naturalRatio, 0.4), 3)}` } as React.CSSProperties
+        : undefined;
+
     return (
         <div
             className="gm-media-card"
@@ -236,7 +247,10 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                 }
             }}
         >
-            <div className="gm-media-preview-wrapper">
+            <div
+                className={`gm-media-preview-wrapper${naturalRatio ? " gm-has-ratio" : ""}`}
+                style={previewStyle}
+            >
                 <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>
 
                 {item.type === "file" || item.type === "audio" ? (
@@ -295,7 +309,10 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                             src={displaySrc}
                             alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
+                            width={item.width}
+                            height={item.height}
                             loading="lazy"
+                            decoding="async"
                             onLoad={() => setMediaLoaded(true)}
                             onError={() => {
                                 setMediaLoaded(true);

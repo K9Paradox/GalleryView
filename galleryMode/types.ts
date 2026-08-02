@@ -52,6 +52,8 @@ export interface SearchParameters {
     hasVideo?: boolean;
     hasEmbed?: boolean;
     offset?: number;
+    /** Separate cursor for the embed stream blended into the "all" filter (see SearchService). */
+    embedOffset?: number;
     limit?: number;
     authorId?: string;
     authorIds?: string[];
@@ -135,6 +137,7 @@ export interface SearchCacheEntry {
     totalResults: number;
     hasMore: boolean;
     nextOffset: number;
+    nextEmbedOffset?: number;
 }
 
 export interface RateLimitState {

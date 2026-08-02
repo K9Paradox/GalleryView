@@ -305,13 +305,24 @@
     margin-bottom: 16px;
 }
 
+/* Cards whose natural size Discord told us about keep the inline aspect-ratio set by
+   MediaCard, so the column height is correct before a single byte is decoded.
+   Cards without dimensions (external embeds, files) fall back to a 4:3 placeholder box
+   rather than collapsing to 0px — collapsing is what caused the layout to thrash and
+   the infinite-scroll sentinel to fire repeatedly. */
 .gm-media-grid.gm-masonry .gm-media-preview-wrapper {
-    aspect-ratio: auto;
     height: auto;
+    aspect-ratio: 4 / 3;
+}
+
+.gm-media-grid.gm-masonry .gm-media-preview-wrapper.gm-has-ratio {
+    /* aspect-ratio comes from the inline style */
+    aspect-ratio: auto;
 }
 
 .gm-media-grid.gm-masonry .gm-media-element {
-    height: auto;
+    height: 100%;
+    width: 100%;
     object-fit: contain;
     max-height: 72vh;
 }
@@ -1033,4 +1044,12 @@ video.gm-modal-media {
 .gm-media-grid:not(.gm-masonry) .gm-media-card {
     content-visibility: auto;
     contain-intrinsic-size: auto var(--gm-card-min-width, 240px) calc(var(--gm-card-min-width, 240px) + 80px);
+}
+
+/* Masonry deliberately opts OUT of content-visibility: skipping an element's layout inside a
+   CSS multi-column container makes the browser re-pack every column when it scrolls back into
+   view, which is exactly the "spazzing" we're trying to avoid. Paint containment is safe though
+   and still saves work, because the card's box size is now known up front. */
+.gm-media-grid.gm-masonry .gm-media-card {
+    contain: paint style;
 }

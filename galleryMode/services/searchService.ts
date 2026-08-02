@@ -10,14 +10,29 @@ import {
 } from "../types";
 import { CacheService } from "./cacheService";
 
-type SearchResult = { items: MediaItem[]; totalResults: number; hasMore: boolean; nextOffset: number };
+type SearchResult = {
+    items: MediaItem[];
+    totalResults: number;
+    hasMore: boolean;
+    nextOffset: number;
+    /** Cursor for the embed stream that "all" blends in — tracked separately from nextOffset. */
+    nextEmbedOffset?: number;
+};
 type DiscordSearchHasType = "image" | "video" | "sound" | "file" | "embed";
 
 export class SearchService {
     private static requestQueue: Array<() => Promise<void>> = [];
     private static isProcessingQueue = false;
     private static lastRequestTimestamp = 0;
-    private static readonly MIN_REQUEST_INTERVAL_MS = 350;
+    private static readonly BASE_REQUEST_INTERVAL_MS = 350;
+    private static readonly MAX_REQUEST_INTERVAL_MS = 2500;
+    /**
+     * Adaptive spacing between search requests. Starts at BASE, doubles every time Discord
+     * throttles us, and decays back down after a run of clean responses. This keeps normal
+     * browsing fast while stopping the gallery from repeatedly walking into the same 429.
+     */
+    private static requestIntervalMs = 350;
+    private static cleanResponseStreak = 0;
     private static readonly MAX_RETRIES = 3;
 
     private static rateLimitState: RateLimitState = {
@@ -27,6 +42,28 @@ export class SearchService {
     };
 
     private static inFlightRequests = new Map<string, Promise<SearchResult>>();
+
+    /**
+     * Negative cache: search targets that returned zero results for a given `has:` stream.
+     * Lets us skip requests that are guaranteed to come back empty (e.g. the embed blend in a
+     * channel that has never had a link embed). Cleared when the plugin/gallery is reset.
+     */
+    private static emptyStreams = new Set<string>();
+
+    /**
+     * Raw HTTP response cache, keyed by endpoint + serialized query. Distinct gallery filters
+     * frequently produce byte-identical Discord requests (e.g. ALL and FILE both send `has=file`),
+     * so this collapses them into a single network round-trip. Short TTL keeps results fresh.
+     */
+    private static rawResponseCache = new Map<string, { timestamp: number; data: DiscordSearchResponse; }>();
+    private static inFlightRaw = new Map<string, Promise<DiscordSearchResponse>>();
+    private static readonly RAW_CACHE_TTL_MS = 60 * 1000;
+    private static readonly MAX_RAW_CACHE_ENTRIES = 60;
+
+    public static resetNegativeCache(): void {
+        this.emptyStreams.clear();
+        this.rawResponseCache.clear();
+    }
 
     public static getRateLimitState(): RateLimitState {
         if (this.rateLimitState.isRateLimited && Date.now() >= this.rateLimitState.resetTimestamp) {
@@ -45,7 +82,8 @@ export class SearchService {
                 items: cached.items,
                 totalResults: cached.totalResults,
                 hasMore: cached.hasMore,
-                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length)
+                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length),
+                nextEmbedOffset: cached.nextEmbedOffset
             };
         }
 
@@ -56,7 +94,7 @@ export class SearchService {
             this.enqueueRequest(async () => {
                 try {
                     const result = await this.executeSearchRequest(params);
-                    CacheService.set(params, result.items, result.totalResults, result.hasMore, result.nextOffset);
+                    CacheService.set(params, result.items, result.totalResults, result.hasMore, result.nextOffset, result.nextEmbedOffset);
                     resolve(result);
                 } catch (err) {
                     reject(err);
@@ -88,8 +126,8 @@ export class SearchService {
                 }
 
                 const timeSinceLast = Date.now() - this.lastRequestTimestamp;
-                if (timeSinceLast < this.MIN_REQUEST_INTERVAL_MS) {
-                    await this.sleep(this.MIN_REQUEST_INTERVAL_MS - timeSinceLast);
+                if (timeSinceLast < this.requestIntervalMs) {
+                    await this.sleep(this.requestIntervalMs - timeSinceLast);
                 }
 
                 const task = this.requestQueue.shift();
@@ -104,28 +142,67 @@ export class SearchService {
     }
 
     private static async executeSearchRequest(params: SearchParameters): Promise<SearchResult> {
-        const primary = await this.executeSingleSearchRequest(params, this.resolveHasType(params.filterType));
+        const isAll = (params.filterType ?? "all") === "all";
 
         // "All" should feel like a real gallery, not just attachments. Discord search only accepts
-        // one has: type per request, so cheaply blend in rich embeds from the same page.
-        if ((params.filterType ?? "all") === "all") {
+        // one has: type per request, so we run two streams (attachments + embeds) and blend them.
+        //
+        // Each stream keeps its OWN cursor. Previously both used params.offset, so as soon as one
+        // stream ran out the other kept re-requesting an already-consumed page — burning a request
+        // per "Load More" that could never return anything new. embedOffset < 0 marks the embed
+        // stream as exhausted, which skips the second HTTP request entirely from then on.
+        const embedOffset = params.embedOffset ?? params.offset ?? 0;
+        const embedExhausted = isAll && embedOffset < 0;
+
+        const attachmentTarget = this.searchTargetKey(params);
+        const skipEmbedStream = embedExhausted || this.emptyStreams.has(`${attachmentTarget}|embed`);
+
+        const primary = await this.executeSingleSearchRequest(params, this.resolveHasType(params.filterType));
+
+        if (isAll && !skipEmbedStream) {
             try {
                 await this.enforceRequestSpacing();
-                const embeds = await this.executeSingleSearchRequest({ ...params, filterType: "all" }, "embed");
+                const embeds = await this.executeSingleSearchRequest(
+                    { ...params, filterType: "all", offset: embedOffset },
+                    "embed"
+                );
                 const items = CacheService.deduplicateItems(primary.items, embeds.items);
+
+                // Remember channel/guild+filter combinations that have zero embed results at all,
+                // so subsequent pages in this session don't pay for a guaranteed-empty request.
+                if (embedOffset === 0 && embeds.totalResults === 0) {
+                    this.emptyStreams.add(`${attachmentTarget}|embed`);
+                }
+
                 return {
                     items,
                     totalResults: Math.max(primary.totalResults, embeds.totalResults, items.length),
                     hasMore: primary.hasMore || embeds.hasMore,
-                    // Pagination is driven by the primary (attachment) page's hit count.
-                    nextOffset: primary.nextOffset
+                    nextOffset: primary.nextOffset,
+                    nextEmbedOffset: embeds.hasMore ? embeds.nextOffset : -1
                 };
             } catch (err) {
                 console.warn("[GalleryMode] Failed to include embed results in all-media query; continuing with attachments only.", err);
             }
         }
 
-        return primary;
+        return isAll ? { ...primary, nextEmbedOffset: skipEmbedStream ? -1 : primary.nextEmbedOffset } : primary;
+    }
+
+    /** Identity of the thing being searched, ignoring pagination — used for negative caching. */
+    private static searchTargetKey(params: SearchParameters): string {
+        const target = params.guildId ? `g:${params.guildId}` : `c:${params.channelId ?? ""}`;
+        const channels = params.channelIds?.length ? [...params.channelIds].sort().join(",") : "";
+        const authors = params.authorIds?.length ? [...params.authorIds].sort().join(",") : (params.authorId ?? "");
+        return [
+            target,
+            channels,
+            authors,
+            (params.query ?? "").trim().toLowerCase(),
+            params.beforeDate ?? "",
+            params.afterDate ?? "",
+            params.nsfw === false ? "0" : "1"
+        ].join("|");
     }
 
     private static async executeSingleSearchRequest(
@@ -189,6 +266,40 @@ export class SearchService {
         queryParams: Record<string, any>,
         attempt = 0
     ): Promise<DiscordSearchResponse> {
+        if (attempt === 0) {
+            const rawKey = `${endpoint}?${JSON.stringify(Object.entries(queryParams).sort())}`;
+
+            const cached = this.rawResponseCache.get(rawKey);
+            if (cached && Date.now() - cached.timestamp <= this.RAW_CACHE_TTL_MS) return cached.data;
+            if (cached) this.rawResponseCache.delete(rawKey);
+
+            // Collapse concurrent identical requests (two filters resolving the same has: type).
+            const pending = this.inFlightRaw.get(rawKey);
+            if (pending) return pending;
+
+            const promise = this.performDiscordSearch(endpoint, queryParams, attempt)
+                .then(data => {
+                    if (this.rawResponseCache.size >= this.MAX_RAW_CACHE_ENTRIES) {
+                        const oldest = this.rawResponseCache.keys().next().value;
+                        if (oldest !== undefined) this.rawResponseCache.delete(oldest);
+                    }
+                    this.rawResponseCache.set(rawKey, { timestamp: Date.now(), data });
+                    return data;
+                })
+                .finally(() => this.inFlightRaw.delete(rawKey));
+
+            this.inFlightRaw.set(rawKey, promise);
+            return promise;
+        }
+
+        return this.performDiscordSearch(endpoint, queryParams, attempt);
+    }
+
+    private static async performDiscordSearch(
+        endpoint: string,
+        queryParams: Record<string, any>,
+        attempt: number
+    ): Promise<DiscordSearchResponse> {
         try {
             const response: any = await RestAPI.get({
                 url: endpoint,
@@ -202,6 +313,7 @@ export class SearchService {
             // Treat it as a transient loading state instead of surfacing a permanent error.
             if (responseData?.retry_after && !responseData?.messages && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(responseData.retry_after);
+                this.onThrottled();
                 this.rateLimitState = {
                     isRateLimited: true,
                     retryAfterMs: retryMs,
@@ -212,11 +324,13 @@ export class SearchService {
                 return this.requestDiscordSearch(endpoint, queryParams, attempt + 1);
             }
 
+            this.onCleanResponse();
             return responseData as DiscordSearchResponse;
         } catch (err: any) {
             const retryAfter = err?.body?.retry_after ?? err?.retry_after;
             if ((err?.status === 429 || retryAfter) && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(retryAfter || 3);
+                this.onThrottled();
                 this.rateLimitState = {
                     isRateLimited: true,
                     retryAfterMs: retryMs,
@@ -426,10 +540,22 @@ export class SearchService {
 
     private static async enforceRequestSpacing(): Promise<void> {
         const timeSinceLast = Date.now() - this.lastRequestTimestamp;
-        if (timeSinceLast < this.MIN_REQUEST_INTERVAL_MS) {
-            await this.sleep(this.MIN_REQUEST_INTERVAL_MS - timeSinceLast);
+        if (timeSinceLast < this.requestIntervalMs) {
+            await this.sleep(this.requestIntervalMs - timeSinceLast);
         }
         this.lastRequestTimestamp = Date.now();
+    }
+
+    private static onThrottled(): void {
+        this.cleanResponseStreak = 0;
+        this.requestIntervalMs = Math.min(this.MAX_REQUEST_INTERVAL_MS, Math.round(this.requestIntervalMs * 2));
+    }
+
+    private static onCleanResponse(): void {
+        if (this.requestIntervalMs <= this.BASE_REQUEST_INTERVAL_MS) return;
+        if (++this.cleanResponseStreak < 5) return;
+        this.cleanResponseStreak = 0;
+        this.requestIntervalMs = Math.max(this.BASE_REQUEST_INTERVAL_MS, Math.round(this.requestIntervalMs / 2));
     }
 
     private static normaliseRetryAfter(retryAfter: number): number {

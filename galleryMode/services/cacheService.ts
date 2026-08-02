@@ -38,6 +38,9 @@ export class CacheService {
         const query = (params.query || "").trim().toLowerCase();
         const filter = params.filterType || "all";
         const offset = params.offset || 0;
+        // The "all" filter blends a second embed stream with its own cursor; two pages can share
+        // an attachment offset but differ in embed offset, so it belongs in the key.
+        const embedOffset = params.embedOffset ?? offset;
         const limit = params.limit || 25;
         const authors = params.authorIds && params.authorIds.length > 0 
             ? `authors:${[...params.authorIds].sort().join(",")}` 
@@ -49,7 +52,7 @@ export class CacheService {
         const sort = params.sortOrder || "desc";
         const nsfw = params.nsfw === false ? "0" : "1";
 
-        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|before:${before}|after:${after}|sort:${sort}|nsfw:${nsfw}|o:${offset}|l:${limit}`;
+        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|before:${before}|after:${after}|sort:${sort}|nsfw:${nsfw}|o:${offset}|eo:${embedOffset}|l:${limit}`;
     }
 
     /**
@@ -84,7 +87,14 @@ export class CacheService {
     /**
      * Store search results into the cache
      */
-    public static set(params: SearchParameters, items: MediaItem[], totalResults: number, hasMore: boolean, nextOffset?: number): void {
+    public static set(
+        params: SearchParameters,
+        items: MediaItem[],
+        totalResults: number,
+        hasMore: boolean,
+        nextOffset?: number,
+        nextEmbedOffset?: number
+    ): void {
         const key = this.generateKey(params);
         this.cache.delete(key); // move an existing key to most-recent position
         if (this.cache.size >= this.MAX_CACHE_ENTRIES) {
@@ -96,7 +106,8 @@ export class CacheService {
             items,
             totalResults,
             hasMore,
-            nextOffset: nextOffset ?? ((params.offset || 0) + items.length)
+            nextOffset: nextOffset ?? ((params.offset || 0) + items.length),
+            nextEmbedOffset
         });
     }
 
