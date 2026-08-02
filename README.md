@@ -25,6 +25,9 @@ A Vencord user plugin that adds a Discord header-bar Gallery Mode button. Galler
 - Adapts to light, dark and custom Discord themes automatically
 - Thread-aware: search the current thread, every thread under its parent channel
   (with an individual thread picker), or the whole server
+- Server channel picker groups channels under collapsible categories, with a filter
+  box and per-category select-all
+- Configurable defaults for scope, media filter, sort order and card size
 
 ## Installation
 

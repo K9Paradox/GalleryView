@@ -66,14 +66,20 @@ function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
 
         // Discord's own toolbar icons may not be mounted yet on the first paint, so retry on a
         // short backoff until one is found (or we give up and keep the CSS fallback).
+        let retryTimer: number | null = null;
         const attempt = () => {
             if (cancelled || read()) return;
             if (++attempts > 12) return;
-            window.setTimeout(attempt, 100 * attempts);
+            retryTimer = window.setTimeout(attempt, 100 * attempts);
         };
         attempt();
 
-        if (typeof MutationObserver === "undefined") return () => { cancelled = true; };
+        const stopRetrying = () => {
+            cancelled = true;
+            if (retryTimer != null) clearTimeout(retryTimer);
+        };
+
+        if (typeof MutationObserver === "undefined") return stopRetrying;
 
         // Re-read on theme switches. Watches `class` only: Discord rewrites inline `style`
         // constantly, and reacting to that caused a measurable stall.
@@ -90,7 +96,7 @@ function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
         observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
         return () => {
-            cancelled = true;
+            stopRetrying();
             if (debounce != null) clearTimeout(debounce);
             observer.disconnect();
         };

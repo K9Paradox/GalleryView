@@ -80,6 +80,40 @@ export const settings = definePluginSettings({
         description: "Show the author avatar and username under each card (off = pure gallery wall)",
         default: true
     },
+    defaultScope: {
+        type: OptionType.SELECT,
+        description: "Default search scope when the gallery opens",
+        options: [
+            { label: "Current channel / thread", value: "channel", default: true },
+            { label: "All sub threads (falls back to the channel)", value: "parent" },
+            { label: "Entire server", value: "guild" }
+        ]
+    },
+    defaultFilterType: {
+        type: OptionType.SELECT,
+        description: "Default media type filter",
+        options: [
+            { label: "All", value: "all", default: true },
+            { label: "Images & GIFs", value: "image" },
+            { label: "Videos", value: "video" },
+            { label: "Embeds", value: "embed" },
+            { label: "Files", value: "file" },
+            { label: "Audio", value: "audio" }
+        ]
+    },
+    defaultSortOrder: {
+        type: OptionType.SELECT,
+        description: "Default result ordering",
+        options: [
+            { label: "Newest first", value: "desc", default: true },
+            { label: "Oldest first", value: "asc" }
+        ]
+    },
+    rememberSessions: {
+        type: OptionType.BOOLEAN,
+        description: "Restore your filters and scroll position when reopening a channel's gallery",
+        default: true
+    },
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",

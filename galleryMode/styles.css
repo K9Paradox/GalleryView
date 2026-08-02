@@ -1833,3 +1833,113 @@ video.gm-modal-media {
 .gm-motion-subtle .gm-media-card:hover {
     box-shadow: 0 12px 28px var(--gm-scrim-strong), 0 0 0 1px rgba(88, 101, 242, 0.4);
 }
+
+/* ==========================================================================
+   Channel picker: collapsible categories + filter
+   ========================================================================== */
+
+.gm-dropdown-filter {
+    width: 100%;
+    height: 30px;
+    margin: 6px 0 8px;
+    padding: 0 10px;
+    background: var(--gm-input-bg) !important;
+    border: 1px solid var(--gm-line) !important;
+    border-radius: 6px;
+    color: var(--gm-text-strong) !important;
+    font-size: 13px;
+    outline: none;
+}
+
+.gm-dropdown-filter::placeholder {
+    color: var(--gm-text-faint) !important;
+}
+
+.gm-dropdown-filter:focus {
+    border-color: var(--gm-accent) !important;
+}
+
+.gm-channel-category + .gm-channel-category {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--gm-line-softer);
+}
+
+.gm-category-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gm-category-toggle {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 2px;
+    border: none;
+    background: transparent;
+    color: var(--gm-text-muted) !important;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: left;
+}
+
+.gm-category-toggle:hover {
+    color: var(--gm-text-strong) !important;
+}
+
+.gm-category-caret {
+    display: inline-block;
+    font-size: 10px;
+    line-height: 1;
+    transition: transform 0.15s ease;
+}
+
+.gm-category-caret.collapsed {
+    transform: rotate(-90deg);
+}
+
+.gm-category-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gm-category-count {
+    margin-left: auto;
+    padding-left: 6px;
+    font-variant-numeric: tabular-nums;
+    color: var(--gm-text-faint) !important;
+}
+
+.gm-category-all {
+    flex-shrink: 0;
+    border: none;
+    background: var(--gm-fill-soft) !important;
+    color: var(--gm-text) !important;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.gm-category-all:hover {
+    background: var(--gm-accent) !important;
+    color: #fff !important;
+}
+
+/* Indent channels so the category grouping reads clearly. */
+.gm-channel-category .gm-channel-option {
+    padding-left: 16px;
+}
+
+.gm-motion-off .gm-category-caret {
+    transition: none;
+}

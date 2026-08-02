@@ -66,6 +66,55 @@ function isThreadParentChannel(channel: any): boolean {
     return !!channel && THREAD_PARENT_CHANNEL_TYPES.has(channel.type);
 }
 
+// Discord calls the collapsible groups in a server's channel list "categories" (channel
+// type 4). The folders in the left-hand server rail group *servers*, not channels, so they
+// are not relevant to a per-server channel picker.
+const GUILD_CATEGORY_CHANNEL_TYPE = 4;
+
+interface ChannelCategory {
+    id: string;
+    name: string;
+    channels: any[];
+}
+
+/** Bucket channels under their parent category, preserving Discord's own ordering. */
+function groupChannelsByCategory(channels: any[], resolveChannel: (id: string) => any): ChannelCategory[] {
+    const categories = new Map<string, ChannelCategory>();
+    const UNCATEGORISED = "__none__";
+
+    for (const channel of channels) {
+        // A thread's parent_id points at its channel, not a category, so walk up to the
+        // owning channel first and use *its* category.
+        const owner = THREAD_CHANNEL_TYPES.has(channel.type)
+            ? resolveChannel(channel.parent_id) ?? channel
+            : channel;
+
+        const categoryId = owner?.parent_id ?? UNCATEGORISED;
+        const existing = categories.get(categoryId);
+
+        if (existing) {
+            existing.channels.push(channel);
+            continue;
+        }
+
+        const categoryChannel = categoryId === UNCATEGORISED ? null : resolveChannel(categoryId);
+        categories.set(categoryId, {
+            id: categoryId,
+            name: categoryChannel?.type === GUILD_CATEGORY_CHANNEL_TYPE
+                ? (categoryChannel.name || "Category")
+                : "Uncategorised",
+            channels: [channel]
+        });
+    }
+
+    // Uncategorised channels sit at the top in Discord's own UI; mirror that.
+    return [...categories.values()].sort((a, b) => {
+        if (a.id === UNCATEGORISED) return -1;
+        if (b.id === UNCATEGORISED) return 1;
+        return 0;
+    });
+}
+
 function normaliseGuildChannels(raw: any): any[] {
     const buckets = [raw?.SELECTABLE, raw?.VOCAL, raw?.TEXTUAL, raw?.THREADS].filter(Boolean);
     const channels = buckets.flatMap(bucket => Array.isArray(bucket) ? bucket : Object.values(bucket));
@@ -82,30 +131,41 @@ function normaliseGuildChannels(raw: any): any[] {
         .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
 }
 
-function createDefaultSessionState(initialQuery: string, defaultCardSize?: string): GallerySessionState {
+interface SessionDefaults {
+    cardSize?: string;
+    scope?: ScopeType;
+    filterType?: FilterType;
+    sortOrder?: GallerySortOrder;
+}
+
+function createDefaultSessionState(initialQuery: string, defaults: SessionDefaults = {}): GallerySessionState {
     return {
         mediaItems: [],
         offset: 0,
         totalResults: 0,
         hasMore: true,
         scrollTop: 0,
-        filterType: "all",
+        filterType: defaults.filterType || "all",
         selectedTypes: [],
-        scope: "channel",
+        scope: defaults.scope || "channel",
         searchQuery: initialQuery,
         activeQuery: initialQuery,
-        cardMinWidth: defaultCardSize || "240px",
+        cardMinWidth: defaults.cardSize || "240px",
         beforeDate: "",
         afterDate: "",
-        sortOrder: "desc",
+        sortOrder: defaults.sortOrder || "desc",
         selectedAuthors: [],
         selectedChannelIds: [],
         selectedThreadIds: []
     };
 }
 
-function mergeSessionState(session: GallerySessionState | null, initialQuery: string, defaultCardSize?: string): GallerySessionState {
-    const fallback = createDefaultSessionState(initialQuery, defaultCardSize);
+function mergeSessionState(
+    session: GallerySessionState | null,
+    initialQuery: string,
+    defaults: SessionDefaults = {}
+): GallerySessionState {
+    const fallback = createDefaultSessionState(initialQuery, defaults);
     if (!session) return fallback;
 
     return {
@@ -114,15 +174,20 @@ function mergeSessionState(session: GallerySessionState | null, initialQuery: st
         mediaItems: session.mediaItems || [],
         beforeDate: session.beforeDate || "",
         afterDate: session.afterDate || "",
-        sortOrder: session.sortOrder || "desc",
+        sortOrder: session.sortOrder || defaults.sortOrder || "desc",
         selectedAuthors: session.selectedAuthors || [],
         selectedChannelIds: session.selectedChannelIds || []
     };
 }
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
-    const { animations, defaultCardSize, layout, nsfw, prefetchNextPage, skeletonPlaceholders } =
-        settings.use(["animations", "defaultCardSize", "layout", "nsfw", "prefetchNextPage", "skeletonPlaceholders"]);
+    const {
+        animations, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
+        layout, nsfw, prefetchNextPage, rememberSessions, skeletonPlaceholders
+    } = settings.use([
+        "animations", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
+        "layout", "nsfw", "prefetchNextPage", "rememberSessions", "skeletonPlaceholders"
+    ]);
     const motion: string = animations || "full";
     // Measured from Discord's live background so custom/light themes are handled, not guessed.
     const themeTone = useThemeTone();
@@ -154,7 +219,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const threadHostChannel = threadParentChannel ?? (isThreadParentChannel(currentChannel) ? currentChannel : null);
     const threadHostId: string | undefined = threadHostChannel?.id;
     const sessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
-    const initialSession = mergeSessionState(CacheService.getSession(sessionKey), initialQuery, defaultCardSize || "240px");
+    const sessionDefaults: SessionDefaults = {
+        cardSize: defaultCardSize || "240px",
+        // "parent" only makes sense where a thread host exists; the scope-guard effect below
+        // corrects it otherwise, so this is safe to apply unconditionally.
+        scope: (defaultScope as ScopeType) || "channel",
+        filterType: (defaultFilterType as FilterType) || "all",
+        sortOrder: (defaultSortOrder as GallerySortOrder) || "desc"
+    };
+
+    // `rememberSessions` off means always start from the configured defaults.
+    const initialSession = mergeSessionState(
+        rememberSessions === false ? null : CacheService.getSession(sessionKey),
+        initialQuery,
+        sessionDefaults
+    );
 
     const [mediaItems, setMediaItems] = useState<MediaItem[]>(initialSession.mediaItems);
     const [loading, setLoading] = useState<boolean>(initialSession.mediaItems.length === 0);
@@ -319,6 +398,36 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         [siblingThreads]
     );
 
+    // Categories the user has collapsed in the picker. Collapsing is purely visual — it never
+    // changes which channels are selected or searched.
+    const [collapsedCategories, setCollapsedCategories] = useState<string[]>([]);
+    // Free-text filter inside the channel picker — essential in servers with 100+ channels.
+    const [channelFilter, setChannelFilter] = useState<string>("");
+
+    const channelCategories = React.useMemo(() => {
+        const needle = channelFilter.trim().toLowerCase();
+        const visible = needle
+            ? guildChannels.filter((channel: any) => String(channel.name || "").toLowerCase().includes(needle))
+            : guildChannels;
+
+        return groupChannelsByCategory(visible, (id: string) => (id ? ChannelStore?.getChannel(id) : null));
+    }, [guildChannels, channelFilter]);
+
+
+    const toggleCategoryCollapsed = (id: string) => {
+        setCollapsedCategories(prev => prev.includes(id) ? prev.filter(entry => entry !== id) : [...prev, id]);
+    };
+
+    /** Select or clear every channel in one category at once. */
+    const toggleCategorySelection = (category: ChannelCategory) => {
+        const ids = category.channels.map((channel: any) => channel.id);
+        const allSelected = ids.every(id => selectedChannelIds.includes(id));
+
+        setSelectedChannelIds(prev => allSelected
+            ? prev.filter(id => !ids.includes(id))
+            : [...prev, ...ids.filter(id => !prev.includes(id))]);
+    };
+
     const availableGuildChannelIds = React.useMemo(() => new Set(guildChannels.map((channel: any) => channel.id)), [guildChannels]);
 
     const effectiveSelectedChannelIds = React.useMemo(() => {
@@ -411,6 +520,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     }, [authorQuery]);
 
     const persistSession = React.useCallback((targetSessionKey = sessionKey, scrollTop = lastScrollTopRef.current) => {
+        // Honour the "don't remember sessions" preference at the write side too, so nothing is
+        // left behind to restore later.
+        if (rememberSessions === false) return;
         const snapshot = stateSnapshotRef.current;
 
         CacheService.saveSession(targetSessionKey, {
@@ -432,10 +544,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             selectedChannelIds: snapshot.selectedChannelIds,
             selectedThreadIds: snapshot.selectedThreadIds
         });
-    }, [sessionKey]);
+    }, [rememberSessions, sessionKey]);
 
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
-        const next = mergeSessionState(session, initialQuery, defaultCardSize || "240px");
+        const next = mergeSessionState(session, initialQuery, {
+            cardSize: defaultCardSize || "240px",
+            scope: (defaultScope as ScopeType) || "channel",
+            filterType: (defaultFilterType as FilterType) || "all",
+            sortOrder: (defaultSortOrder as GallerySortOrder) || "desc"
+        });
 
         latestRequestRef.current++;
         fetchingRef.current = false;
@@ -456,6 +573,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(next.hasMore);
         setScope(next.scope);
         setCardMinWidth(next.cardMinWidth || defaultCardSize || "240px");
+        setCollapsedCategories([]);
+        setChannelFilter("");
         setBeforeDate(next.beforeDate || "");
         setAfterDate(next.afterDate || "");
         setSortOrder(next.sortOrder || "desc");
@@ -467,7 +586,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setSelectedChannelIds(next.selectedChannelIds || []);
         setSelectedThreadIds(next.selectedThreadIds || []);
         setShowThreadDropdown(false);
-    }, [defaultCardSize, initialQuery]);
+    }, [defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder, initialQuery]);
 
     /** Resolve the live Discord target. Returns null when there is nothing searchable. */
     const resolveSearchTarget = () => {
@@ -915,8 +1034,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
         isHydratingSessionRef.current = true;
         lastSessionKeyRef.current = sessionKey;
-        applySessionState(CacheService.getSession(sessionKey));
-    }, [applySessionState, persistSession, sessionKey]);
+        applySessionState(rememberSessions === false ? null : CacheService.getSession(sessionKey));
+    }, [applySessionState, persistSession, rememberSessions, sessionKey]);
 
     useEffect(() => {
         const scrollTop = pendingRestoreScrollRef.current;
@@ -1236,24 +1355,75 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <div className="gm-channel-select-wrap" ref={channelSelectRef}>
                                 <button
                                     className={`gm-scope-btn gm-channel-select-btn ${effectiveSelectedChannelIds.length > 0 ? "active" : ""}`}
-                                    onClick={() => setShowChannelDropdown(value => !value)}
+                                    onClick={() => {
+                                        setShowChannelDropdown(value => !value);
+                                        setChannelFilter("");
+                                    }}
                                 >
                                     # {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} Channels` : "Select Channels"} ▼
                                 </button>
                                 {showChannelDropdown && (
                                     <div className="gm-channel-dropdown">
                                         <div className="gm-dropdown-title">Select Channels ({guildChannels.length} available)</div>
+                                        <input
+                                            type="text"
+                                            className="gm-dropdown-filter"
+                                            placeholder="Filter channels…"
+                                            value={channelFilter}
+                                            onChange={(e) => setChannelFilter(e.currentTarget.value)}
+                                        />
                                         {effectiveSelectedChannelIds.length > 0 && (
                                             <button className="gm-dropdown-link" onClick={() => setSelectedChannelIds([])}>Clear selected channels</button>
                                         )}
                                         {guildChannels.length === 0 ? (
                                             <div className="gm-dropdown-empty">No searchable text, thread, forum, or media channels found in this server.</div>
-                                        ) : guildChannels.map((channel: any) => (
-                                            <label key={channel.id} className="gm-channel-option">
-                                                <input type="checkbox" checked={effectiveSelectedChannelIds.includes(channel.id)} onChange={() => toggleChannelSelection(channel.id)} />
-                                                <span>#{channel.name}</span>
-                                            </label>
-                                        ))}
+                                        ) : channelCategories.map(category => {
+                                            const collapsed = collapsedCategories.includes(category.id);
+                                            const selectedInCategory = category.channels.filter(
+                                                (channel: any) => effectiveSelectedChannelIds.includes(channel.id)
+                                            ).length;
+
+                                            return (
+                                                <div key={category.id} className="gm-channel-category">
+                                                    <div className="gm-category-header">
+                                                        <button
+                                                            type="button"
+                                                            className="gm-category-toggle"
+                                                            onClick={() => toggleCategoryCollapsed(category.id)}
+                                                            aria-expanded={!collapsed}
+                                                            title={collapsed ? "Expand category" : "Collapse category"}
+                                                        >
+                                                            <span className={`gm-category-caret${collapsed ? " collapsed" : ""}`}>▾</span>
+                                                            <span className="gm-category-name">{category.name}</span>
+                                                            <span className="gm-category-count">
+                                                                {selectedInCategory > 0
+                                                                    ? `${selectedInCategory}/${category.channels.length}`
+                                                                    : category.channels.length}
+                                                            </span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="gm-category-all"
+                                                            onClick={() => toggleCategorySelection(category)}
+                                                            title="Select or clear every channel in this category"
+                                                        >
+                                                            {selectedInCategory === category.channels.length ? "None" : "All"}
+                                                        </button>
+                                                    </div>
+
+                                                    {!collapsed && category.channels.map((channel: any) => (
+                                                        <label key={channel.id} className="gm-channel-option">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={effectiveSelectedChannelIds.includes(channel.id)}
+                                                                onChange={() => toggleChannelSelection(channel.id)}
+                                                            />
+                                                            <span>#{channel.name}</span>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            );
+                                        })}
                                     </div>
                                 )}
                             </div>

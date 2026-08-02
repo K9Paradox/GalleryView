@@ -41,7 +41,9 @@ async function downloadMedia(url: string, fallbackName: string) {
         document.body.appendChild(a);
         a.click();
         a.remove();
-        URL.revokeObjectURL(objectUrl);
+        // Revoking immediately can abort the download before the browser has finished reading
+        // the blob, which showed up as silently truncated files for larger media. Defer it.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
         showToast("Downloaded media", Toasts.Type.SUCCESS);
     } catch (err) {
         console.warn("[GalleryMode] Download failed:", err);

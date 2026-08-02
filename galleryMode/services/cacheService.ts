@@ -29,6 +29,11 @@ export class CacheService {
     // ordered, so the oldest entry is always the first key — cheap LRU-by-recency via re-insert.
     private static MAX_CACHE_ENTRIES = 80;
     private static MAX_SESSIONS = 12;
+    // Sessions retain their loaded media so reopening a channel is instant. Without a cap, a
+    // user who scrolled deep through several large channels keeps every item alive: 12 sessions
+    // times thousands of items is real memory. Restoring the first few pages is enough to feel
+    // instant; anything beyond that is re-fetched on scroll (and usually still cached).
+    private static MAX_SESSION_ITEMS = 300;
 
     /**
      * Generate a deterministic, fully unique cache key from search parameters
@@ -132,12 +137,27 @@ export class CacheService {
      * Save active gallery viewing session state (including scroll position and card size)
      */
     public static saveSession(sessionKey: string, state: GallerySessionState): void {
+        let trimmed = state;
+
+        if (state.mediaItems.length > this.MAX_SESSION_ITEMS) {
+            // Truncating the items alone would leave `offset` pointing past the end, so the next
+            // "Load More" after a restore would skip everything in between. Reset the cursor and
+            // scroll position to match the retained slice, and mark it as having more to fetch.
+            trimmed = {
+                ...state,
+                mediaItems: state.mediaItems.slice(0, this.MAX_SESSION_ITEMS),
+                offset: this.MAX_SESSION_ITEMS,
+                hasMore: true,
+                scrollTop: 0
+            };
+        }
+
         this.sessions.delete(sessionKey); // refresh recency
         if (this.sessions.size >= this.MAX_SESSIONS) {
             const oldestKey = this.sessions.keys().next().value;
             if (oldestKey !== undefined) this.sessions.delete(oldestKey);
         }
-        this.sessions.set(sessionKey, state);
+        this.sessions.set(sessionKey, trimmed);
     }
 
     /**
