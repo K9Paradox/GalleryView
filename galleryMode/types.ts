@@ -1,4 +1,11 @@
+// Shared type definitions for GalleryMode. Keep this file type-only —
+// no runtime code belongs here.
+
 export type MediaType = "image" | "gif" | "video" | "embed" | "file" | "audio";
+
+export type GalleryFilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
+
+export type GallerySortOrder = "asc" | "desc";
 
 export interface MediaAuthor {
     id: string;
@@ -38,7 +45,7 @@ export interface SearchParameters {
     guildId?: string;
     channelIds?: string[];
     query?: string;
-    filterType?: "all" | "image" | "video" | "embed" | "file" | "audio";
+    filterType?: GalleryFilterType;
     beforeDate?: string;
     afterDate?: string;
     hasImage?: boolean;
@@ -50,6 +57,8 @@ export interface SearchParameters {
     authorIds?: string[];
     mentions?: string;
     nsfw?: boolean;
+    /** Result ordering by message timestamp. Defaults to "desc" (newest first). */
+    sortOrder?: GallerySortOrder;
 }
 
 export interface DiscordAttachment {
@@ -61,6 +70,13 @@ export interface DiscordAttachment {
     height?: number;
     width?: number;
     content_type?: string;
+}
+
+export interface DiscordEmbedMedia {
+    url: string;
+    proxy_url?: string;
+    height?: number;
+    width?: number;
 }
 
 export interface DiscordEmbed {
@@ -79,24 +95,9 @@ export interface DiscordEmbed {
         url?: string;
         icon_url?: string;
     };
-    thumbnail?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
-    image?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
-    video?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
+    thumbnail?: DiscordEmbedMedia;
+    image?: DiscordEmbedMedia;
+    video?: DiscordEmbedMedia;
 }
 
 export interface DiscordUser {
@@ -124,6 +125,8 @@ export interface DiscordSearchResponse {
     total_results: number;
     messages: DiscordMessage[][];
     analytics_id?: string;
+    /** Present instead of results while the search index warms up. */
+    retry_after?: number;
 }
 
 export interface SearchCacheEntry {

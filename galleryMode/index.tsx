@@ -1,36 +1,14 @@
-import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin from "@utils/types";
 import { React, useEffect, useState } from "@webpack/common";
 import { GalleryView } from "./components/GalleryView";
 import { GalleryHeaderButton } from "./components/HeaderSearchBar";
+import { settings } from "./settings";
 import "./styles.css";
 
-export const settings = definePluginSettings({
-    layout: {
-        type: OptionType.SELECT,
-        description: "Gallery Layout",
-        options: [
-            { label: "Grid — uniform square tiles", value: "grid", default: true },
-            { label: "Masonry — natural image aspect ratios", value: "masonry" }
-        ]
-    },
-    defaultCardSize: {
-        type: OptionType.SELECT,
-        description: "Card Width / Grid Density",
-        options: [
-            { label: "Compact (~180px - High Density)", value: "180px" },
-            { label: "Standard (~240px - Balanced)", value: "240px", default: true },
-            { label: "Large (~320px - Expanded)", value: "320px" },
-            { label: "Showcase (~420px - High Detail)", value: "420px" }
-        ]
-    },
-    nsfw: {
-        type: OptionType.BOOLEAN,
-        description: "Include NSFW results in the gallery",
-        default: true
-    }
-});
+// Re-exported for backwards compatibility — the definition lives in ./settings.ts
+// to break the index ↔ GalleryView module cycle.
+export { settings };
 
 // Reactive state store for Gallery Mode active status
 let isGalleryActive = false;

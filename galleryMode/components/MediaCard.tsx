@@ -131,7 +131,10 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) => {
+// Memoized so gallery-level re-renders (typing in the search box, the rate-limit
+// tick, badge updates, …) don't re-render hundreds of cards that didn't change.
+// Items keep referential identity across pagination thanks to deduplicateItems().
+export const MediaCard = React.memo(function MediaCard({ item, onCloseGallery }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
@@ -342,4 +345,4 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
             {copySuccess && <div className="gm-copy-toast">Copied!</div>}
         </div>
     );
-};
+});

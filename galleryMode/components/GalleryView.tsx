@@ -11,10 +11,10 @@ import {
     useRef,
     useState
 } from "@webpack/common";
-import { settings } from "../index";
+import { settings } from "../settings";
 import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
-import { MediaItem, SearchParameters } from "../types";
+import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
 
 interface GalleryViewProps {
@@ -61,6 +61,9 @@ function createDefaultSessionState(initialQuery: string, defaultCardSize?: strin
         searchQuery: initialQuery,
         activeQuery: initialQuery,
         cardMinWidth: defaultCardSize || "240px",
+        beforeDate: "",
+        afterDate: "",
+        sortOrder: "desc",
         selectedAuthors: [],
         selectedChannelIds: []
     };
@@ -74,6 +77,9 @@ function mergeSessionState(session: GallerySessionState | null, initialQuery: st
         ...fallback,
         ...session,
         mediaItems: session.mediaItems || [],
+        beforeDate: session.beforeDate || "",
+        afterDate: session.afterDate || "",
+        sortOrder: session.sortOrder || "desc",
         selectedAuthors: session.selectedAuthors || [],
         selectedChannelIds: session.selectedChannelIds || []
     };
@@ -109,10 +115,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [selectedAuthors, setSelectedAuthors] = useState<AuthorPill[]>(initialSession.selectedAuthors || []);
     const [showChannelDropdown, setShowChannelDropdown] = useState<boolean>(false);
     const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(initialSession.selectedChannelIds || []);
+    const [beforeDate, setBeforeDate] = useState<string>(initialSession.beforeDate || "");
+    const [afterDate, setAfterDate] = useState<string>(initialSession.afterDate || "");
+    const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
+    const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
 
+    const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const observerTargetRef = useRef<HTMLDivElement>(null);
+    const channelSelectRef = useRef<HTMLDivElement>(null);
+    const authorInputRef = useRef<HTMLDivElement>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
@@ -134,6 +147,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         searchQuery,
         activeQuery,
         cardMinWidth,
+        beforeDate,
+        afterDate,
+        sortOrder,
         selectedAuthors,
         selectedChannelIds
     });
@@ -149,6 +165,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         searchQuery,
         activeQuery,
         cardMinWidth,
+        beforeDate,
+        afterDate,
+        sortOrder,
         selectedAuthors,
         selectedChannelIds
     };
@@ -186,15 +205,25 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, scope]);
 
     const authorSuggestions = React.useMemo(() => {
-        if (!debouncedAuthorQuery.trim() || !guildId || !GuildMemberStore || !UserStore) return [];
+        const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
+        if (!q || !UserStore) return [];
 
         try {
-            const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
-            const rawMembers = GuildMemberStore.getMembers(guildId) || [];
-            const members = Array.isArray(rawMembers) ? rawMembers : Object.values(rawMembers);
+            let users: any[] = [];
 
-            return members
-                .map((member: any) => UserStore.getUser(member.userId || member.user_id || member.id))
+            if (guildId && GuildMemberStore) {
+                const rawMembers = GuildMemberStore.getMembers(guildId) || [];
+                const members = Array.isArray(rawMembers) ? rawMembers : Object.values(rawMembers);
+                users = members.map((member: any) => UserStore.getUser(member.userId || member.user_id || member.id));
+            } else if (currentChannel?.recipients?.length) {
+                // DMs / group DMs have no guild member list — suggest from the recipient list instead
+                // so the author filter still works there.
+                users = currentChannel.recipients.map((id: string) => UserStore.getUser(id));
+            } else if (Array.isArray(currentChannel?.rawRecipients) && currentChannel.rawRecipients.length) {
+                users = currentChannel.rawRecipients;
+            }
+
+            return users
                 .filter((user: any) => user && !selectedAuthors.some(author => author.id === user.id))
                 .filter((user: any) => {
                     const username = user.username?.toLowerCase() || "";
@@ -205,7 +234,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         } catch {
             return [];
         }
-    }, [debouncedAuthorQuery, guildId, selectedAuthors]);
+    }, [debouncedAuthorQuery, guildId, selectedAuthors, currentChannel]);
 
     // Debounce the author search so we don't filter every guild member on every keystroke.
     useEffect(() => {
@@ -227,6 +256,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             searchQuery: snapshot.searchQuery,
             activeQuery: snapshot.activeQuery,
             cardMinWidth: snapshot.cardMinWidth,
+            beforeDate: snapshot.beforeDate,
+            afterDate: snapshot.afterDate,
+            sortOrder: snapshot.sortOrder,
             selectedAuthors: snapshot.selectedAuthors,
             selectedChannelIds: snapshot.selectedChannelIds
         });
@@ -253,6 +285,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(next.hasMore);
         setScope(next.scope);
         setCardMinWidth(next.cardMinWidth || defaultCardSize || "240px");
+        setBeforeDate(next.beforeDate || "");
+        setAfterDate(next.afterDate || "");
+        setSortOrder(next.sortOrder || "desc");
+        setAuthorMenuDismissed(false);
         setShowScrollTop((next.scrollTop || 0) > 400);
         setAuthorQuery("");
         setSelectedAuthors(next.selectedAuthors || []);
@@ -301,7 +337,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
             offset: fetchOffset,
             limit: PAGE_SIZE,
-            nsfw
+            nsfw,
+            beforeDate: beforeDate || undefined,
+            afterDate: afterDate || undefined,
+            sortOrder
         };
 
         try {
@@ -336,6 +375,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 searchQuery,
                 activeQuery: query,
                 cardMinWidth,
+                beforeDate,
+                afterDate,
+                sortOrder,
                 selectedAuthors,
                 selectedChannelIds: effectiveSelectedChannelIds
             });
@@ -391,6 +433,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setSearchQuery("");
         setActiveQuery("");
         setAuthorQuery("");
+        setBeforeDate("");
+        setAfterDate("");
+        setSortOrder("desc");
+        setAuthorMenuDismissed(false);
         setSelectedAuthors([]);
         setSelectedChannelIds([]);
         setShowChannelDropdown(false);
@@ -408,23 +454,33 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     };
 
     useEffect(() => {
-        const interval = setInterval(() => setRateLimitTick(tick => tick + 1), 1000);
+        // Only tick while a rate limit is actually active — otherwise this re-renders the whole
+        // gallery (and every card in it) once per second with zero visible benefit.
+        const interval = setInterval(() => {
+            if (SearchService.getRateLimitState().isRateLimited) setRateLimitTick(tick => tick + 1);
+        }, 1000);
         return () => clearInterval(interval);
     }, []);
 
+    // Focus the dialog on open so Esc-to-close works immediately. The Escape handler lives on
+    // the overlay element itself (not window), so Escape inside an image/video modal opened from
+    // the gallery closes that modal first instead of tearing the gallery down behind it.
     useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key !== "Escape") return;
-            if (showChannelDropdown) {
-                setShowChannelDropdown(false);
-                return;
-            }
-            onClose?.();
+        containerRef.current?.focus();
+    }, []);
+
+    // Close the channel dropdown / author suggestions when clicking anywhere outside them.
+    useEffect(() => {
+        const onDocumentMouseDown = (e: MouseEvent) => {
+            const target = e.target as Node | null;
+            if (!target) return;
+            if (channelSelectRef.current && !channelSelectRef.current.contains(target)) setShowChannelDropdown(false);
+            if (authorInputRef.current && !authorInputRef.current.contains(target)) setAuthorMenuDismissed(true);
         };
 
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [onClose, showChannelDropdown]);
+        document.addEventListener("mousedown", onDocumentMouseDown);
+        return () => document.removeEventListener("mousedown", onDocumentMouseDown);
+    }, []);
 
     useEffect(() => {
         if (!guildId || availableGuildChannelIds.size === 0) return;
@@ -472,6 +528,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         persistSession(sessionKey, scrollContainerRef.current?.scrollTop || 0);
     }, [
         activeQuery,
+        afterDate,
+        beforeDate,
         cardMinWidth,
         filterType,
         hasMore,
@@ -483,13 +541,19 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         selectedAuthors,
         selectedChannelIds,
         sessionKey,
+        sortOrder,
         totalResults
     ]);
 
     useEffect(() => {
-        // Use lastScrollTopRef here — the DOM ref is nulled during unmount, so reading it directly
-        // would save 0 and wipe the user's saved scroll position.
-        return () => persistSession(lastSessionKeyRef.current, lastScrollTopRef.current);
+        // Use lastScrollTopRef for the scroll position — the DOM ref is nulled during unmount, so
+        // reading it directly would save 0 and wipe the user's saved scroll depth.
+        // Capture the session key at registration time: this effect re-registers whenever
+        // sessionKey changes, and its cleanup fires AFTER the session-swap effect above has
+        // already updated lastSessionKeyRef. Reading the live ref would save the old session's
+        // snapshot under the new channel's key, corrupting that channel's cached session.
+        const keyAtRegistration = lastSessionKeyRef.current;
+        return () => persistSession(keyAtRegistration, lastScrollTopRef.current);
     }, [persistSession]);
 
     useEffect(() => {
@@ -506,7 +570,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-    }, [activeQuery, channelId, effectiveSelectedChannelIds, filterType, guildId, scope, selectedAuthors]);
+    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, sortOrder]);
 
     useEffect(() => {
         const target = observerTargetRef.current;
@@ -528,8 +592,41 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const retrySeconds = rateLimitState.isRateLimited ? Math.max(1, Math.ceil((rateLimitState.resetTimestamp - Date.now()) / 1000)) : 0;
     void rateLimitTick;
 
+    const authorMenuOpen = authorSuggestions.length > 0 && !authorMenuDismissed;
+
+    const handleGalleryKeyDown = (e: React.KeyboardEvent) => {
+        if (e.key !== "Escape") return;
+        if (showChannelDropdown) {
+            setShowChannelDropdown(false);
+            return;
+        }
+        if (authorMenuOpen) {
+            setAuthorMenuDismissed(true);
+            return;
+        }
+        onClose?.();
+    };
+
+    const keepFocusInsideGallery = () => {
+        // Clicking bare overlay chrome would otherwise move focus to <body>, silently breaking
+        // Esc-to-close until the user clicks a control again. Re-focus the container after any
+        // click that didn't land on something focusable inside the gallery.
+        window.setTimeout(() => {
+            const container = containerRef.current;
+            if (container && !container.contains(document.activeElement)) container.focus();
+        }, 0);
+    };
+
     const viewContent = (
-        <div className="gm-gallery-overlay-container">
+        <div
+            className="gm-gallery-overlay-container"
+            ref={containerRef}
+            tabIndex={-1}
+            role="dialog"
+            aria-label="Gallery Mode"
+            onKeyDown={handleGalleryKeyDown}
+            onMouseDown={keepFocusInsideGallery}
+        >
             <div className="gm-gallery-header">
                 <div className="gm-header-row">
                     <div className="gm-header-left">
@@ -567,7 +664,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         </div>
 
                         {guildId && scope === "guild" && (
-                            <div className="gm-channel-select-wrap">
+                            <div className="gm-channel-select-wrap" ref={channelSelectRef}>
                                 <button
                                     className={`gm-scope-btn gm-channel-select-btn ${effectiveSelectedChannelIds.length > 0 ? "active" : ""}`}
                                     onClick={() => setShowChannelDropdown(value => !value)}
@@ -628,16 +725,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             </span>
                         ))}
 
-                        <div className="gm-author-input-wrap">
+                        <div className="gm-author-input-wrap" ref={authorInputRef}>
                             <input
                                 type="text"
                                 className="gm-search-input gm-author-input"
                                 placeholder="Add author @name..."
                                 value={authorQuery}
-                                onChange={(e) => setAuthorQuery(e.currentTarget.value)}
+                                onChange={(e) => {
+                                    setAuthorQuery(e.currentTarget.value);
+                                    setAuthorMenuDismissed(false);
+                                }}
+                                onKeyDown={(e) => {
+                                    // Enter instantly picks the top suggestion instead of requiring a click.
+                                    if (e.key === "Enter" && authorMenuOpen && authorSuggestions[0]) {
+                                        e.preventDefault();
+                                        addAuthorPill(authorSuggestions[0]);
+                                    }
+                                }}
                             />
 
-                            {authorSuggestions.length > 0 && (
+                            {authorMenuOpen && (
                                 <div className="gm-author-suggestions">
                                     {authorSuggestions.map((user: any) => (
                                         <button key={user.id} className="gm-author-suggestion" onClick={() => addAuthorPill(user)}>
@@ -663,6 +770,34 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         )}
                         <button type="submit" className="gm-search-submit-btn">Search</button>
                     </form>
+
+                    <div className="gm-date-range-wrap" title="Only show media sent within this date range">
+                        <input
+                            type="date"
+                            className="gm-date-input"
+                            aria-label="Media sent on or after this date"
+                            value={afterDate}
+                            max={beforeDate || undefined}
+                            onChange={(e) => setAfterDate(e.currentTarget.value)}
+                        />
+                        <span className="gm-date-separator">→</span>
+                        <input
+                            type="date"
+                            className="gm-date-input"
+                            aria-label="Media sent on or before this date"
+                            value={beforeDate}
+                            min={afterDate || undefined}
+                            onChange={(e) => setBeforeDate(e.currentTarget.value)}
+                        />
+                    </div>
+
+                    <button
+                        className={`gm-scope-btn gm-sort-btn ${sortOrder === "asc" ? "active" : ""}`}
+                        onClick={() => setSortOrder(order => order === "desc" ? "asc" : "desc")}
+                        title="Toggle between newest-first and oldest-first results"
+                    >
+                        {sortOrder === "desc" ? "↓ Newest" : "↑ Oldest"}
+                    </button>
                 </div>
             </div>
 

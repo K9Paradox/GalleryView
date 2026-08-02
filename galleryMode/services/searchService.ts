@@ -168,6 +168,18 @@ export class SearchService {
             queryParams.content = params.query.trim();
         }
 
+        // Date range filters: the search API only understands snowflake boundaries, so convert
+        // the YYYY-MM-DD values from the date pickers into min/max message ids (local time).
+        const minId = params.afterDate ? this.dateToSnowflake(params.afterDate, false) : undefined;
+        if (minId) queryParams.min_id = minId;
+        const maxId = params.beforeDate ? this.dateToSnowflake(params.beforeDate, true) : undefined;
+        if (maxId) queryParams.max_id = maxId;
+
+        if (params.sortOrder) {
+            queryParams.sort_by = "timestamp";
+            queryParams.sort_order = params.sortOrder;
+        }
+
         const responseData = await this.requestDiscordSearch(endpoint, queryParams);
         return this.transformSearchResponse(responseData, params);
     }
@@ -424,6 +436,26 @@ export class SearchService {
         const retry = Number(retryAfter) || 3;
         // Discord sometimes returns seconds and sometimes milliseconds depending on the code path.
         return retry > 100 ? retry : retry * 1000;
+    }
+
+    // Discord snowflakes encode ms-since-the-Discord-epoch in their high bits.
+    private static readonly DISCORD_EPOCH_MS = 1420070400000n;
+
+    private static dateToSnowflake(date: string, endOfDay: boolean): string | undefined {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+        if (!match) return undefined;
+
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        if (!year || !month || !day) return undefined;
+
+        const ms = endOfDay
+            ? new Date(year, month - 1, day, 23, 59, 59, 999).getTime()
+            : new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+        if (!Number.isFinite(ms)) return undefined;
+
+        return ((BigInt(ms) - this.DISCORD_EPOCH_MS) << 22n).toString();
     }
 
     private static sleep(ms: number): Promise<void> {

@@ -7,8 +7,9 @@ A Vencord user plugin that adds a Discord header-bar Gallery Mode button. Galler
 - Channel or whole-server gallery scope
 - Optional multi-channel selection for server searches
 - Media filters: all, images/GIFs, videos, embeds, files, audio
-- Keyword search and multi-author filtering
-- Infinite scroll with request de-duplication, caching, and rate-limit/backoff handling
+- Keyword search and multi-author filtering (works in DMs/group DMs too)
+- Date-range filtering and newest/oldest sort toggle
+- Infinite scroll with request de-duplication, LRU caching, and rate-limit/backoff handling
 - Jump to source message, copy media link, open author profile
 - Discord-native image modal plus built-in video/audio/file preview modal
 - Restores scroll position and session state when reopened

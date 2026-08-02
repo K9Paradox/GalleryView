@@ -1000,3 +1000,37 @@ video.gm-modal-media {
     min-width: 32px;
     cursor: pointer;
 }
+
+/* ==========================================================================
+   Focus management, date/sort controls, rendering performance
+   ========================================================================== */
+
+/* The overlay is focused on open for keyboard control (Esc-to-close) — hide its own ring */
+.gm-gallery-overlay-container:focus {
+    outline: none;
+}
+
+/* Date range controls (pairs with the pre-existing .gm-date-input styling) */
+.gm-date-range-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.gm-date-separator {
+    color: #b5bac1;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.gm-sort-btn {
+    white-space: nowrap;
+}
+
+/* Perf: let Chromium skip layout/paint of off-screen cards in the uniform grid.
+   The `auto` sizes fall back to each card's last rendered size, so scroll
+   restoration stays accurate once a row has been visible at least once. */
+.gm-media-grid:not(.gm-masonry) .gm-media-card {
+    content-visibility: auto;
+    contain-intrinsic-size: auto var(--gm-card-min-width, 240px) calc(var(--gm-card-min-width, 240px) + 80px);
+}
