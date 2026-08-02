@@ -60,6 +60,21 @@ export class SearchService {
     private static readonly RAW_CACHE_TTL_MS = 60 * 1000;
     private static readonly MAX_RAW_CACHE_ENTRIES = 60;
 
+    /**
+     * Warm the cache for a page the user hasn't asked for yet. Identical to searchMedia() except
+     * that failures are swallowed — a prefetch must never surface an error or a spinner. The
+     * result lands in CacheService, so the eventual real call resolves synchronously.
+     */
+    public static prefetchMedia(params: SearchParameters): void {
+        if (this.getRateLimitState().isRateLimited) return;
+        if (CacheService.get(params)) return;
+        if (this.inFlightRequests.has(CacheService.getCacheKey(params))) return;
+
+        void this.searchMedia(params).catch(() => {
+            // Intentionally silent: a failed prefetch just means the real request pays full price.
+        });
+    }
+
     public static resetNegativeCache(): void {
         this.emptyStreams.clear();
         this.rawResponseCache.clear();

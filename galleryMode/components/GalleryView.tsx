@@ -6,6 +6,7 @@ import {
     ReactDOM,
     SelectedChannelStore,
     SelectedGuildStore,
+    SettingsRouter,
     UserStore,
     useEffect,
     useRef,
@@ -16,6 +17,7 @@ import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
 import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
+import { SkeletonGrid } from "./SkeletonCard";
 
 interface GalleryViewProps {
     onClose?: () => void;
@@ -89,7 +91,9 @@ function mergeSessionState(session: GallerySessionState | null, initialQuery: st
 }
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
-    const { defaultCardSize, layout, nsfw } = settings.use(["defaultCardSize", "layout", "nsfw"]);
+    const { animations, defaultCardSize, layout, nsfw, prefetchNextPage, skeletonPlaceholders } =
+        settings.use(["animations", "defaultCardSize", "layout", "nsfw", "prefetchNextPage", "skeletonPlaceholders"]);
+    const motion: string = animations || "full";
     const channelId = SelectedChannelStore?.getChannelId();
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
     // NOTE: currentChannel.guild_id is undefined for DM / group-DM channels. We must NOT fall back
@@ -302,6 +306,38 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setSelectedChannelIds(next.selectedChannelIds || []);
     }, [defaultCardSize, initialQuery]);
 
+    /** Resolve the live Discord target. Returns null when there is nothing searchable. */
+    const resolveSearchTarget = () => {
+        const activeChannelId = SelectedChannelStore?.getChannelId();
+        const activeChannel = activeChannelId ? ChannelStore?.getChannel(activeChannelId) : null;
+        // Same DM-safe guard as above: only fall back to SelectedGuildStore when no channel is active.
+        const activeGuildId = activeChannel?.guild_id || (activeChannel ? undefined : SelectedGuildStore?.getGuildId());
+        if (!activeChannelId && !activeGuildId) return null;
+        return { activeChannelId, activeGuildId };
+    };
+
+    const buildSearchParams = (
+        target: { activeChannelId?: string; activeGuildId?: string; },
+        fetchOffset: number,
+        filter: FilterType,
+        query: string,
+        embedOffset: number
+    ): SearchParameters => ({
+        channelId: scope === "channel" ? target.activeChannelId : undefined,
+        guildId: target.activeGuildId,
+        channelIds: scope === "guild" && effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined,
+        filterType: filter,
+        query,
+        authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
+        offset: fetchOffset,
+        embedOffset,
+        limit: PAGE_SIZE,
+        nsfw,
+        beforeDate: beforeDate || undefined,
+        afterDate: afterDate || undefined,
+        sortOrder
+    });
+
     const fetchMedia = async (
         fetchOffset: number,
         filter: FilterType,
@@ -314,12 +350,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         const requestId = ++latestRequestRef.current;
         fetchingRef.current = true;
 
-        const activeChannelId = SelectedChannelStore?.getChannelId();
-        const activeChannel = activeChannelId ? ChannelStore?.getChannel(activeChannelId) : null;
-        // Same DM-safe guard as above: only fall back to SelectedGuildStore when no channel is active.
-        const activeGuildId = activeChannel?.guild_id || (activeChannel ? undefined : SelectedGuildStore?.getGuildId());
-
-        if (!activeChannelId && !activeGuildId) {
+        const target = resolveSearchTarget();
+        if (!target) {
             setError("No active channel or server detected.");
             setLoading(false);
             setLoadingMore(false);
@@ -327,29 +359,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return;
         }
 
+        const params = buildSearchParams(target, fetchOffset, filter, query, embedOffsetRef.current);
+
+        // If the page is already cached (prefetch, or a filter that maps to the same Discord
+        // query) resolve it without ever flipping on a loading state — the swap is instant and
+        // the user never sees a spinner.
+        const isWarm = CacheService.has(params);
+
         if (isReset) {
-            setLoading(true);
+            setLoading(!isWarm);
             setLoadingMore(false);
         } else {
-            setLoadingMore(true);
+            setLoadingMore(!isWarm);
         }
         setError(null);
-
-        const params: SearchParameters = {
-            channelId: scope === "channel" ? activeChannelId : undefined,
-            guildId: activeGuildId,
-            channelIds: scope === "guild" && effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined,
-            filterType: filter,
-            query,
-            authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
-            offset: fetchOffset,
-            embedOffset: embedOffsetRef.current,
-            limit: PAGE_SIZE,
-            nsfw,
-            beforeDate: beforeDate || undefined,
-            afterDate: afterDate || undefined,
-            sortOrder
-        };
 
         try {
             const res = await SearchService.searchMedia(params);
@@ -601,6 +624,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         void fetchMedia(0, filterType, activeQuery, true);
     }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, sortOrder]);
 
+    // Keep one page ahead of the user at all times. When the current page settles, quietly warm
+    // the next one into the cache so "Load More" / scrolling resolves instantly with no spinner.
+    useEffect(() => {
+        if (!prefetchNextPage) return;
+        if (loading || loadingMore || error || !hasMore) return;
+        if (mediaItems.length === 0) return;
+
+        const target = resolveSearchTarget();
+        if (!target) return;
+
+        // Small delay so a burst of filter changes doesn't fire a prefetch per intermediate state.
+        const timer = setTimeout(() => {
+            SearchService.prefetchMedia(
+                buildSearchParams(target, offset, filterType, activeQuery, embedOffsetRef.current)
+            );
+        }, 400);
+
+        return () => clearTimeout(timer);
+    }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset, prefetchNextPage]);
+
     useEffect(() => {
         const target = observerTargetRef.current;
         const root = scrollContainerRef.current;
@@ -626,6 +669,22 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const authorMenuOpen = authorSuggestions.length > 0 && !authorMenuDismissed;
 
+    // Aspect ratios of media already on screen, so placeholder cards mimic the real content
+    // instead of every fake tile being the same boring square.
+    const recentRatios = React.useMemo(() => {
+        const ratios: number[] = [];
+        for (let i = mediaItems.length - 1; i >= 0 && ratios.length < 12; i--) {
+            const { width, height } = mediaItems[i];
+            if (width && height) ratios.push(width / height);
+        }
+        return ratios;
+    }, [mediaItems]);
+
+    const showSkeletons = skeletonPlaceholders && !error && (loading || loadingMore);
+    // On a fresh query fill roughly a viewport; when appending, only show a page's worth.
+    const skeletonCount = loading ? Math.min(PAGE_SIZE, 18) : Math.min(PAGE_SIZE, 8);
+
+
     const handleGalleryKeyDown = (e: React.KeyboardEvent) => {
         if (e.key !== "Escape") return;
         if (showChannelDropdown) {
@@ -637,6 +696,39 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             return;
         }
         onClose?.();
+    };
+
+    const openGallerySettings = () => {
+        // Vencord doesn't expose openPluginModal through @webpack/common, and userplugins can't
+        // reliably import from @components/settings across forks/versions. Try the plugin modal
+        // via the global Vencord object first (nicest: opens GalleryMode's own settings card),
+        // then fall back to the Plugins settings tab.
+        try {
+            const vencord = (window as any).Vencord;
+            const plugin = vencord?.Plugins?.plugins?.GalleryMode;
+            const openPluginModal = vencord?.Components?.openPluginModal
+                ?? vencord?.Util?.openPluginModal;
+
+            if (plugin && typeof openPluginModal === "function") {
+                openPluginModal(plugin);
+                return;
+            }
+        } catch (err) {
+            console.warn("[GalleryMode] Could not open the plugin modal directly.", err);
+        }
+
+        try {
+            // Vencord registers its plugin list as the "vencord_plugins" entry, which the settings
+            // router addresses as "<key>_panel". Older builds used the "VencordPlugins" section id.
+            const router = SettingsRouter as any;
+            if (typeof router?.openUserSettings === "function") {
+                router.openUserSettings("vencord_plugins_panel");
+            } else if (typeof router?.open === "function") {
+                router.open("VencordPlugins");
+            }
+        } catch (err) {
+            console.warn("[GalleryMode] Could not open Vencord plugin settings.", err);
+        }
     };
 
     const keepFocusInsideGallery = () => {
@@ -651,7 +743,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const viewContent = (
         <div
-            className="gm-gallery-overlay-container"
+            className={`gm-gallery-overlay-container gm-motion-${motion}`}
             ref={containerRef}
             tabIndex={-1}
             role="dialog"
@@ -744,9 +836,22 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         ))}
                     </div>
 
-                    <button className="gm-scope-btn" onClick={clearFilters} title="Clear search/filter/author/channel selections">Reset</button>
+                    <div className="gm-header-actions">
+                        <button className="gm-scope-btn gm-reset-btn" onClick={clearFilters} title="Clear search/filter/author/channel selections">Reset</button>
 
-                    {onClose && <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)">✕</button>}
+                        <button
+                            className="gm-icon-btn"
+                            onClick={openGallerySettings}
+                            title="Open GalleryMode plugin settings"
+                            aria-label="Open GalleryMode plugin settings"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <path d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.48.48 0 0 0 .12-.61l-1.92-3.32a.48.48 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.73 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94 0 .31.02.63.06.94l-2.03 1.58a.48.48 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z" />
+                            </svg>
+                        </button>
+
+                        {onClose && <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)">✕</button>}
+                    </div>
                 </div>
 
                 <div className="gm-header-row gm-header-row-search">
@@ -840,13 +945,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             )}
 
             <div className="gm-gallery-content" ref={scrollContainerRef} onScroll={handleScroll}>
-                {loading && (
-                    <div className="gm-loading-state">
-                        <div className="gm-spinner-icon gm-spinner-large" />
-                        <p>Querying Discord Search…</p>
-                    </div>
-                )}
-
                 {error && !loading && (
                     <div className="gm-error-state">
                         <div className="gm-empty-title">Couldn’t load media</div>
@@ -864,17 +962,34 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     </div>
                 )}
 
-                {!loading && mediaItems.length > 0 && (
+                {/* The grid stays mounted across loads. A fresh query paints placeholder cards in
+                    the same shape as the results, and appended pages add placeholders at the end,
+                    so the layout never collapses to an empty "Loading…" screen. */}
+                {(mediaItems.length > 0 || showSkeletons) && !error && (
                     <div
                         className={`gm-media-grid ${layout === "masonry" ? "gm-masonry" : ""}`}
                         style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
                     >
-                        {mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
+                        {!loading && mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
+                        {showSkeletons && (
+                            <SkeletonGrid
+                                count={skeletonCount}
+                                ratios={recentRatios}
+                                masonry={layout === "masonry"}
+                            />
+                        )}
+                    </div>
+                )}
+
+                {loading && !skeletonPlaceholders && (
+                    <div className="gm-loading-state">
+                        <div className="gm-spinner-icon gm-spinner-large" />
+                        <p>Querying Discord Search…</p>
                     </div>
                 )}
 
                 <div ref={observerTargetRef} className="gm-scroll-sentinel">
-                    {loadingMore && (
+                    {loadingMore && !skeletonPlaceholders && (
                         <div className="gm-infinite-spinner-wrapper">
                             <div className="gm-spinner-icon" />
                             <span>Loading more media…</span>

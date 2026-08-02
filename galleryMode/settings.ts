@@ -23,6 +23,25 @@ export const settings = definePluginSettings({
             { label: "Showcase (~420px - High Detail)", value: "420px" }
         ]
     },
+    animations: {
+        type: OptionType.SELECT,
+        description: "Motion & transitions",
+        options: [
+            { label: "Full — staggered card reveals, blur-up, hover lift", value: "full", default: true },
+            { label: "Subtle — quick fades only, no movement", value: "subtle" },
+            { label: "Off — no animation (best for low-end hardware)", value: "off" }
+        ]
+    },
+    skeletonPlaceholders: {
+        type: OptionType.BOOLEAN,
+        description: "Show shimmering placeholder cards while a page loads instead of a spinner",
+        default: true
+    },
+    prefetchNextPage: {
+        type: OptionType.BOOLEAN,
+        description: "Quietly pre-load the next page in the background so scrolling never stalls",
+        default: true
+    },
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",

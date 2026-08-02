@@ -85,6 +85,16 @@ export class CacheService {
     }
 
     /**
+     * Non-mutating "is this page already warm?" check. Used by the UI to decide whether it needs
+     * to show a loading state at all — a cached page resolves instantly, so flashing a spinner for
+     * it would be pure jank.
+     */
+    public static has(params: SearchParameters): boolean {
+        const entry = this.cache.get(this.generateKey(params));
+        return !!entry && Date.now() - entry.timestamp <= this.DEFAULT_TTL_MS;
+    }
+
+    /**
      * Store search results into the cache
      */
     public static set(

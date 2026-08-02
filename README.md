@@ -13,6 +13,11 @@ A Vencord user plugin that adds a Discord header-bar Gallery Mode button. Galler
 - Jump to source message, copy media link, open author profile
 - Discord-native image modal plus built-in video/audio/file preview modal
 - Restores scroll position and session state when reopened
+- Background prefetch of the next page — scrolling rarely hits a loading state
+- Shimmering skeleton placeholder cards instead of a blank "Loading…" screen
+- Three motion tiers (full / subtle / off) plus `prefers-reduced-motion` support
+- One-click button to open the plugin's Vencord settings from the gallery header
+- Responsive header layout down to very small / short windows
 
 ## Installation
 

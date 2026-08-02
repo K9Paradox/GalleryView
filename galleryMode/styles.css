@@ -675,10 +675,6 @@
     flex-wrap: wrap;
 }
 
-.gm-header-row-search {
-    align-items: flex-start;
-}
-
 .gm-channel-select-wrap,
 .gm-author-input-wrap {
     position: relative;
@@ -981,28 +977,6 @@ video.gm-modal-media {
     margin-top: 14px;
 }
 
-@media (max-width: 900px) {
-    .gm-gallery-overlay-container {
-        top: 8px;
-        left: 8px;
-        right: 8px;
-        bottom: 8px;
-    }
-
-    .gm-gallery-header,
-    .gm-gallery-content {
-        padding: 14px;
-    }
-
-    .gm-search-form {
-        width: min(100%, 320px);
-    }
-
-    .gm-filter-tabs,
-    .gm-scope-toggle {
-        overflow-x: auto;
-    }
-}
 
 .gm-header-button {
     border: none !important;
@@ -1052,4 +1026,456 @@ video.gm-modal-media {
    and still saves work, because the card's box size is now known up front. */
 .gm-media-grid.gm-masonry .gm-media-card {
     contain: paint style;
+}
+
+/* ==========================================================================
+   Skeleton placeholders, motion tiers, responsive header
+   ========================================================================== */
+
+/* --- Skeleton / "fake page" cards -------------------------------------- */
+
+.gm-skeleton-card {
+    cursor: default;
+    pointer-events: none;
+    border-color: rgba(255, 255, 255, 0.06) !important;
+    animation: gmSkeletonIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.gm-skeleton-card:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+@keyframes gmSkeletonIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* A single slow sweep across the whole placeholder rather than per-element shimmer —
+   one animated gradient per card keeps the compositor cost flat. */
+.gm-skeleton-preview,
+.gm-skeleton-avatar,
+.gm-skeleton-line {
+    /* !important is required: the base .gm-media-preview-wrapper / .gm-author-avatar rules
+       set their backgrounds with !important too. */
+    background-color: rgba(255, 255, 255, 0.055) !important;
+    background-image: linear-gradient(
+        100deg,
+        rgba(255, 255, 255, 0) 20%,
+        rgba(255, 255, 255, 0.07) 42%,
+        rgba(255, 255, 255, 0.11) 50%,
+        rgba(255, 255, 255, 0.07) 58%,
+        rgba(255, 255, 255, 0) 80%
+    ) !important;
+    background-size: 240% 100% !important;
+    background-repeat: no-repeat !important;
+    animation: gmShimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes gmShimmer {
+    from { background-position: 140% 0; }
+    to   { background-position: -40% 0; }
+}
+
+.gm-skeleton-footer {
+    background: rgba(18, 19, 23, 0.95) !important;
+}
+
+.gm-skeleton-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.gm-skeleton-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.gm-skeleton-line {
+    height: 9px;
+    border-radius: 999px;
+}
+
+.gm-skeleton-line-wide   { width: 62%; }
+.gm-skeleton-line-narrow { width: 38%; height: 8px; }
+
+/* --- Motion tiers ------------------------------------------------------- */
+
+/* Full: staggered blur-up reveal for real cards, gallery-site style. The stagger is driven by
+   nth-child so it costs nothing in JS, and it caps out so late cards appear immediately. */
+.gm-motion-full .gm-media-grid .gm-media-card:not(.gm-skeleton-card) {
+    animation: gmCardIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes gmCardIn {
+    from { opacity: 0; transform: translateY(12px) scale(0.985); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(1)  { animation-delay: 0ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(2)  { animation-delay: 22ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(3)  { animation-delay: 44ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(4)  { animation-delay: 66ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(5)  { animation-delay: 88ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(6)  { animation-delay: 110ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(7)  { animation-delay: 132ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(8)  { animation-delay: 154ms; }
+.gm-motion-full .gm-media-grid .gm-media-card:nth-child(n + 9) { animation-delay: 176ms; }
+
+/* Blur-up: the thumbnail resolves from a soft blur into focus instead of hard-popping. */
+.gm-motion-full .gm-media-element {
+    filter: blur(12px);
+    transform: scale(1.03);
+    transition: opacity 0.3s ease, filter 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s ease;
+}
+
+.gm-motion-full .gm-media-element.loaded {
+    filter: blur(0);
+    transform: scale(1);
+}
+
+.gm-motion-full .gm-media-card:hover .gm-media-element.loaded {
+    transform: scale(1.04);
+}
+
+/* Subtle: fade only, no translation or blur. */
+.gm-motion-subtle .gm-media-grid .gm-media-card:not(.gm-skeleton-card) {
+    animation: gmFadeOnly 0.2s ease both;
+}
+
+@keyframes gmFadeOnly {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.gm-motion-subtle .gm-media-card:hover {
+    transform: none;
+}
+
+.gm-motion-subtle .gm-media-card:hover .gm-media-element {
+    transform: none;
+}
+
+/* Off: kill every decorative animation inside the gallery, including the shimmer and the
+   overlay's own entrance. Spinners stay — they convey state, not decoration. */
+.gm-motion-off,
+.gm-motion-off .gm-media-card,
+.gm-motion-off .gm-media-element,
+.gm-motion-off .gm-skeleton-card,
+.gm-motion-off .gm-skeleton-preview,
+.gm-motion-off .gm-skeleton-avatar,
+.gm-motion-off .gm-skeleton-line {
+    animation: none !important;
+    transition: none !important;
+}
+
+.gm-motion-off .gm-media-card:hover,
+.gm-motion-off .gm-media-card:hover .gm-media-element {
+    transform: none !important;
+}
+
+.gm-motion-off .gm-gallery-content {
+    scroll-behavior: auto;
+}
+
+/* Respect the OS-level accessibility preference regardless of the plugin setting. */
+@media (prefers-reduced-motion: reduce) {
+    .gm-gallery-overlay-container,
+    .gm-gallery-overlay-container * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* --- Header layout & responsive polish ---------------------------------- */
+
+/* Actions (Reset / settings / close) stay glued together at the right edge and never wrap
+   apart from each other, so the close button is always where the user expects it. */
+.gm-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.gm-icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.12) !important;
+    color: #dbdee1 !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gm-icon-btn:hover {
+    background: rgba(255, 255, 255, 0.2) !important;
+    color: #ffffff !important;
+}
+
+.gm-motion-full .gm-icon-btn:hover svg {
+    transform: rotate(45deg);
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gm-icon-btn svg,
+.gm-close-btn {
+    flex-shrink: 0;
+}
+
+.gm-close-btn {
+    margin-left: 0;
+}
+
+/* Long channel names must truncate rather than shove the controls off-screen. */
+.gm-header-left {
+    min-width: 0;
+    flex-shrink: 1;
+}
+
+/* Keep the flex layout from the base rule (the author pill relies on its gap) and truncate
+   the label instead of letting a long channel name push the controls off-screen. */
+.gm-channel-pill {
+    max-width: 260px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gm-count-badge {
+    white-space: nowrap;
+}
+
+.gm-plugin-title {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* The search row: keyword field is the flexible element, everything else keeps its size. */
+.gm-header-row-search {
+    align-items: center;
+    row-gap: 10px;
+}
+
+.gm-author-search-wrap {
+    flex: 1 1 220px;
+    min-width: 180px;
+}
+
+.gm-author-input-wrap {
+    flex: 1 1 auto;
+    min-width: 150px;
+}
+
+.gm-search-form {
+    flex: 1 1 240px;
+    min-width: 180px;
+    max-width: 420px;
+    width: auto;
+}
+
+.gm-date-range-wrap,
+.gm-sort-btn {
+    flex-shrink: 0;
+}
+
+.gm-date-input {
+    min-width: 0;
+}
+
+/* Toggle groups scroll horizontally instead of overflowing when space runs out. */
+.gm-filter-tabs,
+.gm-scope-toggle {
+    flex-shrink: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.gm-filter-tabs::-webkit-scrollbar,
+.gm-scope-toggle::-webkit-scrollbar {
+    display: none;
+}
+
+.gm-filter-tabs > *,
+.gm-scope-toggle > * {
+    flex-shrink: 0;
+}
+
+/* Dropdowns must never spill outside the overlay on a narrow window. */
+.gm-channel-dropdown,
+.gm-author-suggestions {
+    width: min(280px, calc(100vw - 64px));
+    max-width: calc(100vw - 64px);
+}
+
+/* Below ~1100px: the window is no longer wide enough for title + all control groups on one
+   line. Let the row wrap cleanly and give the search row full-width fields. */
+@media (max-width: 1100px) {
+    .gm-gallery-header {
+        padding: 14px 16px;
+        gap: 12px;
+    }
+
+    .gm-channel-pill {
+        max-width: 180px;
+    }
+
+    .gm-search-form,
+    .gm-author-search-wrap {
+        flex-basis: 100%;
+        max-width: none;
+    }
+}
+
+/* Below ~900px: tighten the overlay to the window edges and shrink chrome. */
+@media (max-width: 900px) {
+    .gm-gallery-overlay-container {
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        border-radius: 12px;
+    }
+
+    .gm-gallery-header {
+        padding: 12px;
+        gap: 10px;
+    }
+
+    .gm-gallery-content {
+        padding: 12px;
+    }
+
+    .gm-plugin-title {
+        font-size: 17px;
+    }
+
+    .gm-tab-btn,
+    .gm-scope-btn {
+        padding: 6px 11px;
+        font-size: 12px;
+    }
+
+    .gm-date-range-wrap {
+        flex-basis: 100%;
+        justify-content: space-between;
+    }
+
+    .gm-date-input {
+        flex: 1 1 0;
+    }
+}
+
+/* Below ~640px (the tiny-window screenshot): drop non-essential text, keep every control
+   reachable. The count badge and the plugin wordmark are the first things to go. */
+@media (max-width: 640px) {
+    .gm-gallery-overlay-container {
+        top: 4px;
+        left: 4px;
+        right: 4px;
+        bottom: 4px;
+        border-radius: 10px;
+        /* A heavy backdrop blur over a small viewport is disproportionately expensive. */
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+
+    .gm-plugin-title {
+        font-size: 0;
+        gap: 0;
+    }
+
+    .gm-plugin-title svg {
+        width: 20px;
+        height: 22px;
+    }
+
+    .gm-count-badge {
+        display: none;
+    }
+
+    .gm-channel-pill {
+        max-width: 130px;
+        font-size: 12px;
+        padding: 5px 10px;
+    }
+
+    .gm-header-row {
+        gap: 8px;
+    }
+
+    .gm-filter-tabs,
+    .gm-scope-toggle {
+        padding: 3px;
+    }
+
+    .gm-tab-btn,
+    .gm-scope-btn {
+        padding: 5px 9px;
+        font-size: 11px;
+    }
+
+    .gm-icon-btn,
+    .gm-close-btn {
+        width: 32px;
+        height: 32px;
+    }
+
+    .gm-search-input,
+    .gm-date-input {
+        height: 34px;
+        font-size: 13px;
+    }
+
+    .gm-media-grid {
+        gap: 10px;
+    }
+
+    /* Never let the density setting produce a single sliver of a column on a narrow window. */
+    .gm-media-grid:not(.gm-masonry) {
+        grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
+    }
+
+    .gm-media-grid.gm-masonry {
+        columns: min(var(--gm-col-width, 240px), 100%);
+        column-gap: 10px;
+    }
+
+    .gm-scroll-top-btn {
+        bottom: 14px;
+        right: 14px;
+    }
+}
+
+/* Very short windows: the two header rows eat the whole viewport, so compress them. */
+@media (max-height: 520px) {
+    .gm-gallery-header {
+        padding: 8px 12px;
+        gap: 8px;
+    }
+
+    .gm-plugin-title {
+        font-size: 16px;
+    }
+
+    .gm-search-input,
+    .gm-date-input {
+        height: 32px;
+    }
 }
