@@ -7,6 +7,7 @@ export interface GallerySessionState {
     hasMore: boolean;
     scrollTop: number;
     filterType: "all" | "image" | "video" | "embed" | "file" | "audio";
+    selectedTypes?: Array<"all" | "image" | "video" | "embed" | "file" | "audio">;
     scope: "channel" | "guild";
     searchQuery: string;
     activeQuery: string;
@@ -36,7 +37,11 @@ export class CacheService {
             ? `chans:${[...params.channelIds].sort().join(",")}` 
             : "all_chans";
         const query = (params.query || "").trim().toLowerCase();
-        const filter = params.filterType || "all";
+        // Multi-select participates in the key: the same has: streams are fetched but the
+        // client-side narrowing differs, so results are not interchangeable.
+        const filter = params.filterTypes?.length
+            ? [...params.filterTypes].sort().join("+")
+            : (params.filterType || "all");
         const offset = params.offset || 0;
         // The "all" filter blends a second embed stream with its own cursor; two pages can share
         // an attachment offset but differ in embed offset, so it belongs in the key.

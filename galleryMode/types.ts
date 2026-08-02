@@ -38,6 +38,10 @@ export interface MediaItem {
     embedSiteName?: string;
     embedColor?: number;
     isVideo?: boolean;
+    /** Discord marks spoilered attachments with a SPOILER_ filename prefix. */
+    isSpoiler?: boolean;
+    /** Media that came from an age-restricted channel. */
+    isNsfwChannel?: boolean;
 }
 
 export interface SearchParameters {
@@ -46,6 +50,12 @@ export interface SearchParameters {
     channelIds?: string[];
     query?: string;
     filterType?: GalleryFilterType;
+    /**
+     * Multi-select media types. When present (and containing more than one entry) this takes
+     * precedence over filterType: the union of the requested types is fetched and then filtered
+     * client-side. A single entry behaves exactly like filterType.
+     */
+    filterTypes?: GalleryFilterType[];
     beforeDate?: string;
     afterDate?: string;
     hasImage?: boolean;
@@ -65,6 +75,8 @@ export interface SearchParameters {
 
 export interface DiscordAttachment {
     id: string;
+    /** Bit 1<<3 marks the attachment as a spoiler in newer payloads. */
+    flags?: number;
     filename: string;
     size: number;
     url: string;

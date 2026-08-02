@@ -2,7 +2,26 @@ import { openImageModal, openUserProfile } from "@utils/discord";
 import { copyToClipboard } from "@utils/clipboard";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
+import { settings } from "../settings";
 import { MediaItem } from "../types";
+
+/**
+ * Ask Discord's media proxy for a still frame of an animated image. media.discordapp.net honours
+ * `format=webp` + `animated=false`; anything it doesn't recognise is returned unchanged, and a
+ * non-proxy URL is passed through untouched.
+ */
+function staticFrameUrl(url?: string): string | undefined {
+    if (!url) return url;
+    try {
+        const parsed = new URL(url);
+        if (parsed.hostname !== "media.discordapp.net") return url;
+        parsed.searchParams.set("format", "webp");
+        parsed.searchParams.set("animated", "false");
+        return parsed.toString();
+    } catch {
+        return url;
+    }
+}
 
 function copyWithToast(text: string, toastMsg = "Copied to clipboard!") {
     void copyToClipboard(text)
@@ -135,6 +154,34 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [hovered, setHovered] = useState<boolean>(false);
+
+    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay } =
+        settings.use(["gifPlayback", "videoPlayback", "respectSpoilers", "blurNsfwChannels", "showMetaOverlay"]);
+
+    const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
+    const [revealed, setRevealed] = useState<boolean>(false);
+    const isHidden = shouldBlur && !revealed;
+
+    const videoRef = React.useRef<HTMLVideoElement>(null);
+
+    // Hover-driven playback. Autoplay attributes alone can't express "play on hover", and
+    // toggling the `src` would re-download the file, so we drive the element imperatively.
+    React.useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const mode = videoPlayback || "hover";
+        const shouldPlay = !isHidden && (mode === "always" || (mode === "hover" && hovered));
+
+        if (shouldPlay) {
+            void video.play().catch(() => { /* autoplay can be refused; harmless */ });
+        } else {
+            video.pause();
+            // Rewind so the next hover starts from the beginning rather than mid-clip.
+            if (mode === "hover" && !hovered) video.currentTime = 0;
+        }
+    }, [hovered, isHidden, videoPlayback]);
 
     const jumpToMessage = () => {
         if (!item.channelId || !item.messageId) return;
@@ -217,7 +264,14 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
         }
     };
 
-    const displaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+    const rawDisplaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+
+    // GIF playback control. Discord's media proxy renders a still frame when the request asks for
+    // a non-animated format, so "static until hover/open" is a URL tweak rather than a JS pause.
+    const gifMode = gifPlayback || "always";
+    const wantsStaticGif = item.type === "gif"
+        && (gifMode === "click" || (gifMode === "hover" && !hovered) || isHidden);
+    const displaySrc = wantsStaticGif ? staticFrameUrl(rawDisplaySrc) : rawDisplaySrc;
     const videoSrc = item.type === "video" ? firstSafeMediaUrl(item.proxyUrl, item.url) : undefined;
     const typeLabel = (item.type || "file").toUpperCase();
     const avatar = avatarUrl(item);
@@ -240,11 +294,15 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
 
     return (
         <div
-            className="gm-media-card"
+            className={`gm-media-card${isHidden ? " gm-media-card-hidden" : ""}`}
             onClick={handleCardClick}
             onContextMenu={handleContextMenu}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
             role="button"
             tabIndex={0}
+            onFocus={() => setHovered(true)}
+            onBlur={() => setHovered(false)}
             onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
@@ -256,7 +314,23 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                 className="gm-media-preview-wrapper"
                 style={previewStyle}
             >
-                <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>
+                {showMetaOverlay !== false && <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>}
+
+                {isHidden && (
+                    <div
+                        className="gm-spoiler-veil"
+                        onClick={(e) => {
+                            // Reveal in place; don't also open the full preview modal.
+                            e.stopPropagation();
+                            setRevealed(true);
+                        }}
+                    >
+                        <span className="gm-spoiler-label">
+                            {item.isSpoiler ? "SPOILER" : "AGE-RESTRICTED"}
+                        </span>
+                        <span className="gm-spoiler-hint">Click to reveal</span>
+                    </div>
+                )}
 
                 {item.type === "file" || item.type === "audio" ? (
                     <div className="gm-file-card-preview">
@@ -279,10 +353,12 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                             </div>
                         )}
                         <video
+                            ref={videoRef}
                             src={videoSrc}
                             poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
                             preload="metadata"
                             muted
+                            loop
                             playsInline
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
                             onLoadedMetadata={() => setMediaLoaded(true)}
@@ -327,7 +403,9 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                     </>
                 )}
 
-                {item.timestamp && <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>}
+                {showMetaOverlay !== false && item.timestamp && (
+                    <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>
+                )}
 
                 <div className="gm-card-actions-overlay">
                     <button className="gm-action-btn primary" onClick={handleJumpToMessage} title="Jump to Message in Chat">Jump ➔</button>

@@ -42,6 +42,39 @@ export const settings = definePluginSettings({
         description: "Quietly pre-load the next page in the background so scrolling never stalls",
         default: true
     },
+    gifPlayback: {
+        type: OptionType.SELECT,
+        description: "GIF playback",
+        options: [
+            { label: "Always animate", value: "always", default: true },
+            { label: "Animate on hover", value: "hover" },
+            { label: "Only when opened (static thumbnails)", value: "click" }
+        ]
+    },
+    videoPlayback: {
+        type: OptionType.SELECT,
+        description: "Video previews",
+        options: [
+            { label: "Preview on hover (muted)", value: "hover", default: true },
+            { label: "Autoplay all previews (muted)", value: "always" },
+            { label: "Only when opened (poster frame only)", value: "click" }
+        ]
+    },
+    respectSpoilers: {
+        type: OptionType.BOOLEAN,
+        description: "Blur media from spoiler-tagged messages until clicked",
+        default: true
+    },
+    blurNsfwChannels: {
+        type: OptionType.BOOLEAN,
+        description: "Blur media originating from age-restricted channels until clicked",
+        default: false
+    },
+    showMetaOverlay: {
+        type: OptionType.BOOLEAN,
+        description: "Show the date badge and type tag on cards",
+        default: true
+    },
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",

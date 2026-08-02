@@ -17,6 +17,7 @@ import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
 import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
+import { MasonryGrid } from "./MasonryGrid";
 import { SkeletonGrid } from "./SkeletonCard";
 
 interface GalleryViewProps {
@@ -36,6 +37,9 @@ const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
+// Upper bound on pages auto-skipped when a filter matches nothing, so a channel with thousands
+// of non-matching messages can't loop indefinitely.
+const MAX_BARREN_PAGES = 6;
 const SEARCHABLE_GUILD_CHANNEL_TYPES = new Set([0, 5, 10, 11, 12, 15, 16]);
 
 function normaliseGuildChannels(raw: any): any[] {
@@ -62,6 +66,7 @@ function createDefaultSessionState(initialQuery: string, defaultCardSize?: strin
         hasMore: true,
         scrollTop: 0,
         filterType: "all",
+        selectedTypes: [],
         scope: "channel",
         searchQuery: initialQuery,
         activeQuery: initialQuery,
@@ -109,6 +114,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [loadingMore, setLoadingMore] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [filterType, setFilterType] = useState<FilterType>(initialSession.filterType);
+    // Multi-select media types (shift/ctrl-click the tabs). Empty === use filterType alone.
+    const [selectedTypes, setSelectedTypes] = useState<FilterType[]>(initialSession.selectedTypes || []);
     const [searchQuery, setSearchQuery] = useState<string>(initialSession.searchQuery);
     const [activeQuery, setActiveQuery] = useState<string>(initialSession.activeQuery);
     const [offset, setOffset] = useState<number>(initialSession.offset);
@@ -136,6 +143,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const lastAutoLoadRef = useRef<number>(0);
+    // Consecutive pages that yielded no renderable cards (see fetchMedia).
+    const barrenPagesRef = useRef<number>(0);
     // Cursor for the embed stream blended into the "all" filter. -1 means "exhausted, stop asking".
     const embedOffsetRef = useRef<number>(0);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
@@ -153,6 +162,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         totalResults,
         hasMore,
         filterType,
+        selectedTypes,
         scope,
         searchQuery,
         activeQuery,
@@ -171,6 +181,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         totalResults,
         hasMore,
         filterType,
+        selectedTypes,
         scope,
         searchQuery,
         activeQuery,
@@ -262,6 +273,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             hasMore: snapshot.hasMore,
             scrollTop,
             filterType: snapshot.filterType,
+            selectedTypes: snapshot.selectedTypes,
             scope: snapshot.scope,
             searchQuery: snapshot.searchQuery,
             activeQuery: snapshot.activeQuery,
@@ -288,6 +300,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setLoadingMore(false);
         setError(null);
         setFilterType(next.filterType);
+        setSelectedTypes(next.selectedTypes || []);
         setSearchQuery(next.searchQuery);
         setActiveQuery(next.activeQuery);
         setOffset(next.offset);
@@ -327,6 +340,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         guildId: target.activeGuildId,
         channelIds: scope === "guild" && effectiveSelectedChannelIds.length > 0 ? effectiveSelectedChannelIds : undefined,
         filterType: filter,
+        filterTypes: selectedTypes.length > 1 ? selectedTypes : undefined,
         query,
         authorIds: selectedAuthors.length > 0 ? selectedAuthors.map(author => author.id) : undefined,
         offset: fetchOffset,
@@ -384,13 +398,35 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             const nextOffset = res.nextOffset ?? (fetchOffset + PAGE_SIZE);
             if (res.nextEmbedOffset !== undefined) embedOffsetRef.current = res.nextEmbedOffset;
 
-            const updatedItems = isReset ? res.items : CacheService.deduplicateItems(mediaItemsRef.current, res.items);
+            const previousItems = mediaItemsRef.current;
+            const updatedItems = isReset ? res.items : CacheService.deduplicateItems(previousItems, res.items);
+            // How many cards this page actually contributed after client-side type filtering and
+            // de-duplication. Discord counts a "hit" as a matching message, but a message can
+            // yield zero renderable media for the active filter, so this is often 0 even though
+            // the search reported 25 hits.
+            const gained = isReset ? updatedItems.length : updatedItems.length - previousItems.length;
+
             mediaItemsRef.current = updatedItems;
             setMediaItems(updatedItems);
             setTotalResults(res.totalResults);
             setHasMore(res.hasMore);
             setOffset(nextOffset);
             setShowScrollTop((scrollContainerRef.current?.scrollTop || 0) > 400);
+
+            // A page that produced nothing visible must not strand the user on a "Load More"
+            // button that appears to do nothing. Keep walking the result set automatically
+            // until we surface at least one card (or run out), bounded so a huge barren range
+            // can't spin forever.
+            if (gained === 0 && res.hasMore && nextOffset > fetchOffset) {
+                if (barrenPagesRef.current < MAX_BARREN_PAGES) {
+                    barrenPagesRef.current++;
+                    fetchingRef.current = false;
+                    void fetchMedia(nextOffset, filter, query, false);
+                    return;
+                }
+                console.warn(`[GalleryMode] Stopped auto-skipping after ${MAX_BARREN_PAGES} pages with no matching media.`);
+            }
+            barrenPagesRef.current = 0;
 
             if (isReset) {
                 scrollContainerRef.current?.scrollTo({ top: 0 });
@@ -403,6 +439,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 hasMore: res.hasMore,
                 scrollTop: isReset ? 0 : lastScrollTopRef.current,
                 filterType: filter,
+                selectedTypes,
                 scope,
                 searchQuery,
                 activeQuery: query,
@@ -443,12 +480,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             // Guard against runaway auto-pagination. In masonry mode the grid can briefly be
             // shorter than the viewport while images are still decoding, which puts the sentinel
             // permanently on screen and chain-fires page after page until Discord rate-limits us.
-            // Only auto-load once the content is genuinely taller than the scroll port and the
-            // user has actually scrolled into the lower part of it.
+            //
+            // IMPORTANT: when the content is NOT yet taller than the scroll port we must still
+            // keep paginating, otherwise a page whose hits are all filtered out client-side
+            // (very common in DMs and quiet servers, where 25 hits can yield 0 renderable cards)
+            // leaves a permanent "Load More" that scrolling can never dismiss — there is nothing
+            // to scroll. In that case we fall through and auto-load, just on the cooldown.
             if (container) {
                 const { scrollTop, scrollHeight, clientHeight } = container;
-                if (scrollHeight <= clientHeight + 32) return;
-                if (scrollHeight - (scrollTop + clientHeight) > clientHeight) return;
+                const isScrollable = scrollHeight > clientHeight + 32;
+                if (isScrollable && scrollHeight - (scrollTop + clientHeight) > clientHeight) return;
             }
 
             // Rate-limit auto-loads so a layout reflow storm can't burn the search quota.
@@ -463,6 +504,35 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         setActiveQuery(searchQuery.trim());
+    };
+
+    /**
+     * Plain click selects exactly one type. Shift/Ctrl click builds a multi-type selection.
+     * "ALL" is mutually exclusive with everything else — combining it with a specific type is
+     * meaningless, so picking ALL clears the multi-selection.
+     */
+    const toggleFilterTab = (tab: FilterType, additive: boolean) => {
+        if (!additive || tab === "all") {
+            setSelectedTypes([]);
+            setFilterType(tab);
+            return;
+        }
+
+        setSelectedTypes(prev => {
+            // Seed the multi-selection from the currently active single tab.
+            const base = prev.length > 0 ? prev : (filterType === "all" ? [] : [filterType]);
+            const next = base.includes(tab) ? base.filter(t => t !== tab) : [...base, tab];
+
+            if (next.length === 0) {
+                setFilterType("all");
+                return [];
+            }
+            if (next.length === 1) {
+                setFilterType(next[0]);
+                return [];
+            }
+            return next;
+        });
     };
 
     const toggleChannelSelection = (id: string) => {
@@ -481,6 +551,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const clearFilters = () => {
         setFilterType("all");
+        setSelectedTypes([]);
         setSearchQuery("");
         setActiveQuery("");
         setAuthorQuery("");
@@ -591,6 +662,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         searchQuery,
         selectedAuthors,
         selectedChannelIds,
+        selectedTypes,
         sessionKey,
         sortOrder,
         totalResults
@@ -617,12 +689,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         fetchingRef.current = false;
         setOffset(0);
         embedOffsetRef.current = 0;
+        barrenPagesRef.current = 0;
         setMediaItems([]);
         mediaItemsRef.current = [];
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, sortOrder]);
+    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedTypes, sortOrder]);
 
     // Keep one page ahead of the user at all times. When the current page settles, quietly warm
     // the next one into the cache so "Load More" / scrolling resolves instantly with no spinner.
@@ -815,12 +888,25 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         )}
                     </div>
 
-                    <div className="gm-filter-tabs">
-                        {(["all", "image", "video", "embed", "file", "audio"] as const).map(tab => (
-                            <button key={tab} className={`gm-tab-btn ${filterType === tab ? "active" : ""}`} onClick={() => setFilterType(tab)}>
-                                {tab.toUpperCase()}
-                            </button>
-                        ))}
+                    <div
+                        className={`gm-filter-tabs${selectedTypes.length > 1 ? " gm-multi-select" : ""}`}
+                        title="Click to pick one type — Shift or Ctrl click to combine several"
+                    >
+                        {(["all", "image", "video", "embed", "file", "audio"] as const).map(tab => {
+                            const isMulti = selectedTypes.length > 1;
+                            const active = isMulti ? selectedTypes.includes(tab) : filterType === tab;
+
+                            return (
+                                <button
+                                    key={tab}
+                                    className={`gm-tab-btn ${active ? "active" : ""}`}
+                                    aria-pressed={active}
+                                    onClick={(e) => toggleFilterTab(tab, e.shiftKey || e.ctrlKey || e.metaKey)}
+                                >
+                                    {tab.toUpperCase()}
+                                </button>
+                            );
+                        })}
                     </div>
 
                     <div className="gm-scope-toggle" title="Adjust Card Grid Density">
@@ -966,15 +1052,24 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     the same shape as the results, and appended pages add placeholders at the end,
                     so the layout never collapses to an empty "Loading…" screen. */}
                 {(mediaItems.length > 0 || showSkeletons) && !error && (
-                    <div
-                        className={`gm-media-grid ${layout === "masonry" ? "gm-masonry" : ""}`}
-                        style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
-                    >
-                        {!loading && mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
-                        {showSkeletons && (
-                            <SkeletonGrid count={skeletonCount} ratios={recentRatios} />
-                        )}
-                    </div>
+                    layout === "masonry" ? (
+                        <MasonryGrid
+                            items={loading ? [] : mediaItems}
+                            columnWidth={parseInt(cardMinWidth, 10) || 240}
+                            renderItem={item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />}
+                            trailing={showSkeletons ? <SkeletonGrid count={skeletonCount} ratios={recentRatios} /> : null}
+                        />
+                    ) : (
+                        <div
+                            className="gm-media-grid"
+                            style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
+                        >
+                            {!loading && mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
+                            {showSkeletons && (
+                                <SkeletonGrid count={skeletonCount} ratios={recentRatios} />
+                            )}
+                        </div>
+                    )
                 )}
 
                 {loading && !skeletonPlaceholders && (

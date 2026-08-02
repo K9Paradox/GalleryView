@@ -293,16 +293,24 @@
     gap: 16px;
 }
 
-/* Masonry layout — adapts to each item's natural aspect ratio instead of square tiles */
+/* Masonry layout — adapts to each item's natural aspect ratio instead of square tiles.
+
+   Implemented as flex columns filled round-robin by JS rather than CSS `columns`. CSS
+   multi-column fills each column top-to-bottom before starting the next, so with a
+   newest-first sort the oldest item ends up beside the newest one and the dates look
+   shuffled. Explicit columns let us place items in true left-to-right reading order. */
 .gm-media-grid.gm-masonry {
-    display: block;
-    columns: var(--gm-col-width, 240px);
-    column-gap: 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
 }
 
-.gm-media-grid.gm-masonry .gm-media-card {
-    break-inside: avoid;
-    margin-bottom: 16px;
+.gm-masonry-column {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 /* ONLY masonry consumes the per-item ratio that MediaCard publishes as --gm-item-ratio.
@@ -1450,9 +1458,9 @@ video.gm-modal-media {
         grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
     }
 
-    .gm-media-grid.gm-masonry {
-        columns: min(var(--gm-col-width, 240px), 100%);
-        column-gap: 10px;
+    .gm-media-grid.gm-masonry,
+    .gm-masonry-column {
+        gap: 10px;
     }
 
     .gm-scroll-top-btn {
@@ -1476,4 +1484,188 @@ video.gm-modal-media {
     .gm-date-input {
         height: 32px;
     }
+}
+
+/* ==========================================================================
+   Spoiler / age-restricted veil, richer motion
+   ========================================================================== */
+
+.gm-spoiler-veil {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    cursor: pointer;
+    background: rgba(12, 13, 16, 0.55);
+    backdrop-filter: blur(22px) saturate(120%);
+    -webkit-backdrop-filter: blur(22px) saturate(120%);
+    transition: background 0.2s ease;
+}
+
+.gm-spoiler-veil:hover {
+    background: rgba(12, 13, 16, 0.42);
+}
+
+.gm-spoiler-label {
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    color: #ffffff !important;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.gm-spoiler-hint {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.75) !important;
+}
+
+/* Hide the hover action bar while the card is still veiled — the only useful action is reveal. */
+.gm-media-card-hidden .gm-card-actions-overlay,
+.gm-media-card-hidden .gm-video-play-overlay {
+    display: none;
+}
+
+/* --- Richer motion (full tier only) ------------------------------------- */
+
+/* Cards lift with a coloured glow rather than a flat shadow, and the footer text
+   slides up slightly — small touches that read as "modern gallery site". */
+.gm-motion-full .gm-media-card {
+    transition:
+        transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+        box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+        border-color 0.28s ease;
+    will-change: transform;
+}
+
+.gm-motion-full .gm-media-card:hover {
+    transform: translateY(-6px) scale(1.012);
+    box-shadow:
+        0 18px 40px rgba(0, 0, 0, 0.65),
+        0 0 0 1px rgba(88, 101, 242, 0.5),
+        0 8px 32px rgba(88, 101, 242, 0.28);
+}
+
+.gm-motion-full .gm-media-card:active {
+    transform: translateY(-2px) scale(0.995);
+    transition-duration: 0.09s;
+}
+
+/* Gradient scrim behind the date badge so it stays readable, revealed on hover. */
+.gm-motion-full .gm-media-preview-wrapper::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 45%;
+    pointer-events: none;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+    opacity: 0;
+    transition: opacity 0.28s ease;
+    z-index: 1;
+}
+
+.gm-motion-full .gm-media-card:hover .gm-media-preview-wrapper::after {
+    opacity: 1;
+}
+
+.gm-motion-full .gm-card-footer {
+    transition: background 0.25s ease;
+}
+
+.gm-motion-full .gm-media-card:hover .gm-card-footer {
+    background: rgba(30, 32, 40, 0.97) !important;
+}
+
+/* Type badge and date badge drift in from their edges on hover. */
+.gm-motion-full .gm-type-badge,
+.gm-motion-full .gm-card-date-badge-bottom-right {
+    transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.28s ease;
+}
+
+.gm-motion-full .gm-media-card:hover .gm-type-badge {
+    transform: translateY(-2px);
+}
+
+/* Header controls get a springier press response. */
+.gm-motion-full .gm-tab-btn,
+.gm-motion-full .gm-scope-btn {
+    transition:
+        background 0.18s ease,
+        color 0.18s ease,
+        box-shadow 0.18s ease,
+        transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.gm-motion-full .gm-tab-btn:active,
+.gm-motion-full .gm-scope-btn:active {
+    transform: scale(0.94);
+}
+
+.gm-motion-full .gm-tab-btn.active,
+.gm-motion-full .gm-scope-btn.active {
+    animation: gmPillPop 0.26s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes gmPillPop {
+    0%   { transform: scale(0.9); }
+    60%  { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+/* Multi-select reads differently from a single active tab: an inner ring marks each
+   member of a combined selection. */
+.gm-filter-tabs.gm-multi-select .gm-tab-btn.active {
+    box-shadow: 0 2px 8px rgba(88, 101, 242, 0.5), inset 0 0 0 1.5px rgba(255, 255, 255, 0.45);
+}
+
+.gm-filter-tabs.gm-multi-select .gm-tab-btn.active::after {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    margin-left: 5px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    vertical-align: middle;
+}
+
+/* Buttons and inputs get a soft focus/hover glow. */
+.gm-motion-full .gm-load-more-btn {
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+.gm-motion-full .gm-load-more-btn:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+    box-shadow: 0 8px 22px rgba(88, 101, 242, 0.45);
+}
+
+.gm-motion-full .gm-scroll-top-btn {
+    transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.24s ease;
+}
+
+.gm-motion-full .gm-scroll-top-btn:hover {
+    transform: translateY(-3px) scale(1.06);
+}
+
+/* The spoiler veil dissolves rather than snapping away. */
+.gm-motion-full .gm-spoiler-veil {
+    animation: gmVeilIn 0.24s ease both;
+}
+
+@keyframes gmVeilIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Subtle tier keeps the glow but drops the movement. */
+.gm-motion-subtle .gm-media-card:hover {
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(88, 101, 242, 0.4);
 }

@@ -1,4 +1,4 @@
-import { RestAPI } from "@webpack/common";
+import { ChannelStore, RestAPI } from "@webpack/common";
 import {
     DiscordEmbed,
     DiscordMessage,
@@ -157,7 +157,11 @@ export class SearchService {
     }
 
     private static async executeSearchRequest(params: SearchParameters): Promise<SearchResult> {
-        const isAll = (params.filterType ?? "all") === "all";
+        // A multi-type selection cannot be expressed in a single Discord `has:` parameter, so we
+        // fetch the same broad streams as ALL (attachments + embeds) and narrow the results
+        // client-side via matchesRequestedType. Request cost is identical to ALL.
+        const isMultiSelect = (params.filterTypes?.length ?? 0) > 1;
+        const isAll = isMultiSelect || (params.filterType ?? "all") === "all";
 
         // "All" should feel like a real gallery, not just attachments. Discord search only accepts
         // one has: type per request, so we run two streams (attachments + embeds) and blend them.
@@ -172,13 +176,17 @@ export class SearchService {
         const attachmentTarget = this.searchTargetKey(params);
         const skipEmbedStream = embedExhausted || this.emptyStreams.has(`${attachmentTarget}|embed`);
 
-        const primary = await this.executeSingleSearchRequest(params, this.resolveHasType(params.filterType));
+        const primary = await this.executeSingleSearchRequest(
+            params,
+            isMultiSelect ? "file" : this.resolveHasType(params.filterType)
+        );
 
         if (isAll && !skipEmbedStream) {
             try {
                 await this.enforceRequestSpacing();
                 const embeds = await this.executeSingleSearchRequest(
-                    { ...params, filterType: "all", offset: embedOffset },
+                    // Keep filterTypes so the embed page is narrowed client-side the same way.
+                    { ...params, filterType: isMultiSelect ? params.filterType : "all", offset: embedOffset },
                     "embed"
                 );
                 const items = CacheService.deduplicateItems(primary.items, embeds.items);
@@ -216,7 +224,8 @@ export class SearchService {
             (params.query ?? "").trim().toLowerCase(),
             params.beforeDate ?? "",
             params.afterDate ?? "",
-            params.nsfw === false ? "0" : "1"
+            params.nsfw === false ? "0" : "1",
+            params.filterTypes?.length ? [...params.filterTypes].sort().join("+") : (params.filterType ?? "all")
         ].join("|");
     }
 
@@ -375,6 +384,14 @@ export class SearchService {
             if (!msg?.id || seenMessageIds.has(msg.id)) continue;
             seenMessageIds.add(msg.id);
 
+            // Age-restricted source channel — used to optionally blur previews.
+            let isNsfwChannel = false;
+            try {
+                isNsfwChannel = !!ChannelStore?.getChannel(msg.channel_id)?.nsfw;
+            } catch {
+                // Channel not cached; treat as safe rather than blurring everything.
+            }
+
             if (params.channelId && (!params.channelIds || params.channelIds.length === 0) && msg.channel_id !== params.channelId) {
                 continue;
             }
@@ -382,9 +399,12 @@ export class SearchService {
             if (msg.attachments?.length) {
                 for (const att of msg.attachments) {
                     const detectedType = this.categorizeAttachment(att.filename, att.content_type);
-                    if (!this.matchesRequestedType(detectedType, params.filterType)) continue;
+                    if (!this.matchesRequestedType(detectedType, params)) continue;
 
                     const ext = att.filename.includes(".") ? att.filename.split(".").pop()?.toUpperCase() : "FILE";
+                    // Discord flags spoilered attachments with a SPOILER_ filename prefix, and
+                    // newer payloads additionally set bit 1<<3 on attachment.flags.
+                    const isSpoiler = att.filename.startsWith("SPOILER_") || !!((att.flags ?? 0) & 8);
 
                     extractedItems.push({
                         id: `att_${att.id}`,
@@ -402,6 +422,8 @@ export class SearchService {
                         height: att.height,
                         timestamp: msg.timestamp,
                         content: msg.content,
+                        isSpoiler,
+                        isNsfwChannel,
                         author: this.transformAuthor(msg)
                     });
                 }
@@ -411,7 +433,7 @@ export class SearchService {
                 for (let index = 0; index < msg.embeds.length; index++) {
                     const embed = msg.embeds[index];
                     const detectedType = this.categorizeEmbed(embed);
-                    if (!detectedType || !this.matchesRequestedType(detectedType, params.filterType)) continue;
+                    if (!detectedType || !this.matchesRequestedType(detectedType, params)) continue;
 
                     const rawMediaUrl = embed.image?.url || embed.video?.url || embed.thumbnail?.url || embed.url;
                     if (!rawMediaUrl) continue;
@@ -438,6 +460,9 @@ export class SearchService {
                         embedDescription: embed.description,
                         embedSiteName: embed.provider?.name,
                         embedColor: embed.color,
+                        // A link wrapped in || || spoils the embed it generates.
+                        isSpoiler: /\|\|.*?\|\|/s.test(msg.content || ""),
+                        isNsfwChannel,
                         author: this.transformAuthor(msg)
                     });
                 }
@@ -472,12 +497,15 @@ export class SearchService {
         };
     }
 
-    private static matchesRequestedType(type: MediaType, filterType: SearchParameters["filterType"]): boolean {
-        const filter = filterType || "all";
-        if (filter === "all") return true;
-        if (filter === "image") return type === "image" || type === "gif";
-        if (filter === "file") return type === "file";
-        return type === filter;
+    private static matchesRequestedType(type: MediaType, params: SearchParameters): boolean {
+        const selected = params.filterTypes?.length ? params.filterTypes : [params.filterType || "all"];
+        return selected.some(filter => {
+            if (filter === "all") return true;
+            // "image" covers static images and GIFs, matching the IMAGE tab's label.
+            if (filter === "image") return type === "image" || type === "gif";
+            if (filter === "file") return type === "file";
+            return type === filter;
+        });
     }
 
     private static resolveHasType(filterType: SearchParameters["filterType"]): DiscordSearchHasType {
