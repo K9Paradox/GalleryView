@@ -119,9 +119,17 @@
     height: 24px;
     min-width: 32px;
     cursor: pointer;
-    color: currentColor !important;
-    opacity: 0.85;
-    transition: opacity 0.15s ease, color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
+    /* NO `color` declaration here, and deliberately no !important.
+       The colour is set as an inline style by useToolbarIconColor(), copied from a real
+       neighbouring Discord toolbar icon. A `color: ... !important` rule here would beat that
+       inline style and throw the measured value away — which is exactly why the icon kept
+       failing to match. `inherit` is only a fallback for the first paint before the
+       measurement lands; a <button> otherwise gets a UA colour and would not follow the
+       toolbar at all. */
+    color: inherit;
+    /* No opacity dimming: Discord's own toolbar icons are painted at full strength, so any
+       reduction here makes ours visibly washed out next to them. */
+    transition: color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -129,20 +137,20 @@
 }
 
 .gm-header-button:hover {
-    color: currentColor !important;
-    opacity: 1;
     transform: scale(1.05);
+    filter: brightness(1.25);
 }
 
+/* The SVG carries fill="currentColor", so it follows the button's resolved colour. */
 .gm-header-button svg {
-    /* Inherit the button's resolved colour rather than re-resolving a variable. */
     fill: currentColor;
+    color: inherit;
 }
 
 .gm-header-button.active {
-    /* Blurple has adequate contrast against both light and dark header bars. */
+    /* Blurple has adequate contrast against both light and dark header bars. Keeps
+       !important so it overrides the measured inline colour while the gallery is open. */
     color: var(--brand-experiment, #5865f2) !important;
-    opacity: 1;
     filter: drop-shadow(0 0 5px rgba(88, 101, 242, 0.5));
 }
 

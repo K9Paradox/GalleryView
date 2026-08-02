@@ -4,6 +4,7 @@ import { React, useEffect, useState } from "@webpack/common";
 import { GalleryView } from "./components/GalleryView";
 import { GalleryHeaderButton } from "./components/HeaderSearchBar";
 import { settings } from "./settings";
+import { startThemeToneWatcher, stopThemeToneWatcher } from "./useThemeTone";
 import "./styles.css";
 
 // Re-exported for backwards compatibility — the definition lives in ./settings.ts
@@ -76,11 +77,16 @@ export default definePlugin({
     renderHeaderButton: ErrorBoundary.wrap((props: any) => <HeaderButtonWrapper {...props} key="gallery-mode-header-btn" />, { noop: true }),
 
     start() {
+        // Begin measuring Discord's theme immediately, rather than when the gallery first
+        // opens. Detecting on open meant the overlay painted with the default dark palette
+        // and then visibly snapped to the correct one.
+        startThemeToneWatcher();
         console.log("[GalleryMode] Plugin successfully initialized.");
     },
 
     stop() {
         setGalleryActive(false);
+        stopThemeToneWatcher();
         console.log("[GalleryMode] Plugin stopped.");
     }
 });

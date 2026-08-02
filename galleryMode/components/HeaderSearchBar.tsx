@@ -26,31 +26,74 @@ function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
     const [color, setColor] = useState<string | null>(null);
 
     useEffect(() => {
-        const read = () => {
+        let cancelled = false;
+        let attempts = 0;
+
+        const read = (): boolean => {
             const button = buttonRef.current;
-            const toolbar = button?.parentElement;
-            if (!toolbar) return;
+            if (!button) return false;
 
-            // Prefer a real sibling icon button (Inbox, Help, Threads, …). Fall back to the
-            // toolbar container itself, which is what those icons inherit from anyway.
-            const sibling = Array.from(toolbar.children).find(
-                child => child !== button && !!child.querySelector("svg")
-            ) as HTMLElement | undefined;
+            // Walk up a few levels: Discord nests toolbar buttons in wrapper divs, so our
+            // immediate parent often contains no sibling icons at all.
+            let scope: HTMLElement | null = button.parentElement;
+            for (let depth = 0; depth < 4 && scope; depth++) {
+                const icons = Array.from(scope.querySelectorAll("svg"))
+                    .filter(svg => !button.contains(svg));
 
-            const source = sibling?.querySelector("svg") ?? sibling ?? toolbar;
-            const resolved = getComputedStyle(source as Element).color;
+                for (const svg of icons) {
+                    // Prefer the colour actually painting the glyph. Discord sets fill on the
+                    // <svg> (usually to currentColor, which resolves against the button), so
+                    // read fill first and fall back to the inherited text colour.
+                    const styles = getComputedStyle(svg);
+                    const candidate = styles.fill && styles.fill !== "none" && !styles.fill.startsWith("url")
+                        ? styles.fill
+                        : styles.color;
 
-            // Ignore fully transparent / unset values.
-            if (resolved && !/rgba?\(0,\s*0,\s*0,\s*0\)/.test(resolved)) setColor(resolved);
+                    if (!candidate) continue;
+                    // Skip transparent and pure-black placeholder values.
+                    if (/rgba?\(\s*0[,\s]+0[,\s]+0\s*[,)]/.test(candidate)) continue;
+                    if (/^rgba\(.*,\s*0\)$/.test(candidate)) continue;
+
+                    if (!cancelled) setColor(candidate);
+                    return true;
+                }
+
+                scope = scope.parentElement;
+            }
+
+            return false;
         };
 
-        read();
+        // Discord's own toolbar icons may not be mounted yet on the first paint, so retry on a
+        // short backoff until one is found (or we give up and keep the CSS fallback).
+        const attempt = () => {
+            if (cancelled || read()) return;
+            if (++attempts > 12) return;
+            window.setTimeout(attempt, 100 * attempts);
+        };
+        attempt();
 
-        // Re-read when the theme changes. Cheap: one getComputedStyle on one element.
-        if (typeof MutationObserver === "undefined") return;
-        const observer = new MutationObserver(read);
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
-        return () => observer.disconnect();
+        if (typeof MutationObserver === "undefined") return () => { cancelled = true; };
+
+        // Re-read on theme switches. Watches `class` only: Discord rewrites inline `style`
+        // constantly, and reacting to that caused a measurable stall.
+        let debounce: number | null = null;
+        const schedule = () => {
+            if (debounce != null) return;
+            debounce = window.setTimeout(() => {
+                debounce = null;
+                read();
+            }, 120);
+        };
+
+        const observer = new MutationObserver(schedule);
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+
+        return () => {
+            cancelled = true;
+            if (debounce != null) clearTimeout(debounce);
+            observer.disconnect();
+        };
     }, [buttonRef]);
 
     return color;
