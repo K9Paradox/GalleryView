@@ -1,4 +1,5 @@
 import { React } from "@webpack/common";
+import { settings } from "../settings";
 
 interface SkeletonGridProps {
     /** How many placeholder cards to draw. */
@@ -21,6 +22,9 @@ function fallbackRatio(index: number) {
  * match for whatever is about to replace it.
  */
 export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
+    // Mirror the author-footer setting so placeholders are exactly as tall as the real cards
+    // that replace them — otherwise the grid visibly jumps when the swap happens.
+    const { showAuthorFooter } = settings.use(["showAuthorFooter"]);
     const cards: React.ReactNode[] = [];
 
     for (let i = 0; i < count; i++) {
@@ -40,13 +44,15 @@ export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
                     className="gm-media-preview-wrapper gm-skeleton-preview"
                     style={{ "--gm-item-ratio": `${Math.min(Math.max(ratio, 0.4), 3)}` } as React.CSSProperties}
                 />
-                <div className="gm-card-footer gm-skeleton-footer">
-                    <div className="gm-skeleton-avatar" />
-                    <div className="gm-skeleton-lines">
-                        <div className="gm-skeleton-line gm-skeleton-line-wide" />
-                        <div className="gm-skeleton-line gm-skeleton-line-narrow" />
+                {showAuthorFooter !== false && (
+                    <div className="gm-card-footer gm-skeleton-footer">
+                        <div className="gm-skeleton-avatar" />
+                        <div className="gm-skeleton-lines">
+                            <div className="gm-skeleton-line gm-skeleton-line-wide" />
+                            <div className="gm-skeleton-line gm-skeleton-line-narrow" />
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
         );
     }

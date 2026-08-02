@@ -75,6 +75,11 @@ export const settings = definePluginSettings({
         description: "Show the date badge and type tag on cards",
         default: true
     },
+    showAuthorFooter: {
+        type: OptionType.BOOLEAN,
+        description: "Show the author avatar and username under each card (off = pure gallery wall)",
+        default: true
+    },
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",

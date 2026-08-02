@@ -156,14 +156,30 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [hovered, setHovered] = useState<boolean>(false);
 
-    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay } =
-        settings.use(["gifPlayback", "videoPlayback", "respectSpoilers", "blurNsfwChannels", "showMetaOverlay"]);
+    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay, showAuthorFooter } =
+        settings.use([
+            "gifPlayback", "videoPlayback", "respectSpoilers",
+            "blurNsfwChannels", "showMetaOverlay", "showAuthorFooter"
+        ]);
 
     const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
     const [revealed, setRevealed] = useState<boolean>(false);
     const isHidden = shouldBlur && !revealed;
 
     const videoRef = React.useRef<HTMLVideoElement>(null);
+
+    /**
+     * Images served from Discord's CDN are frequently already in the HTTP/memory cache, in which
+     * case the browser fires `load` before React has attached onLoad. The handler then never runs,
+     * `mediaLoaded` stays false and the element is stuck at opacity 0 — an invisible card. Any
+     * repaint (such as hovering) made it appear, which is exactly the symptom.
+     *
+     * A ref callback runs synchronously on mount, so we can catch the already-complete case.
+     * `naturalWidth > 0` distinguishes a genuinely decoded image from a broken one.
+     */
+    const markLoadedIfComplete = React.useCallback((img: HTMLImageElement | null) => {
+        if (img?.complete && img.naturalWidth > 0) setMediaLoaded(true);
+    }, []);
 
     // Hover-driven playback. Autoplay attributes alone can't express "play on hover", and
     // toggling the `src` would re-download the file, so we drive the element imperatively.
@@ -386,13 +402,18 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                                 <div className="gm-spinner-icon" />
                             </div>
                         )}
+                        {/* NOTE: deliberately no loading="lazy". Combined with the
+                            `content-visibility: auto` we set on grid cards, Chromium can leave a
+                            lazy image permanently un-fetched until something forces a repaint —
+                            the "image only appears when I hover it" bug. content-visibility
+                            already skips off-screen layout/paint, so lazy adds little here. */}
                         <img
+                            ref={markLoadedIfComplete}
                             src={displaySrc}
                             alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
                             width={item.width}
                             height={item.height}
-                            loading="lazy"
                             decoding="async"
                             onLoad={() => setMediaLoaded(true)}
                             onError={() => {
@@ -422,6 +443,7 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                 </div>
             </div>
 
+            {showAuthorFooter !== false && (
             <div className="gm-card-footer" onClick={handleOpenAuthorProfile} title="View Author Profile">
                 {avatar ? (
                     <img className="gm-author-avatar" src={avatar} alt={item.author.username} />
@@ -438,6 +460,7 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                     <span className="gm-author-username">@{item.author.username}</span>
                 </div>
             </div>
+            )}
 
             {copySuccess && <div className="gm-copy-toast">Copied!</div>}
         </div>

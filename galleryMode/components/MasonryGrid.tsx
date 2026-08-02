@@ -1,4 +1,5 @@
 import { React, useEffect, useRef, useState } from "@webpack/common";
+import { settings } from "../settings";
 import { MediaItem } from "../types";
 
 interface MasonryGridProps {
@@ -34,6 +35,10 @@ const FOOTER_UNITS = 0.24;
 export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem, trailing }: MasonryGridProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [columnCount, setColumnCount] = useState<number>(1);
+    // Cards are shorter without the author footer, so the packer must account for it or the
+    // columns come out unbalanced.
+    const { showAuthorFooter } = settings.use(["showAuthorFooter"]);
+    const footerUnits = showAuthorFooter === false ? 0 : FOOTER_UNITS;
 
     // Recompute the column count from the real rendered width. ResizeObserver keeps this correct
     // when the Discord window resizes, the sidebar collapses, or the density setting changes.
@@ -77,11 +82,11 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
 
             buckets[shortest].push(item);
             // A card of aspect ratio r occupies 1/r of its width in height, plus the footer.
-            heights[shortest] += 1 / ratio + FOOTER_UNITS;
+            heights[shortest] += 1 / ratio + footerUnits;
         }
 
         return buckets;
-    }, [items, columnCount]);
+    }, [items, columnCount, footerUnits]);
 
     return (
         <div ref={containerRef} className="gm-media-grid gm-masonry" style={{ gap }}>

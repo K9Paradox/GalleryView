@@ -2,10 +2,106 @@
    GalleryMode Vencord Plugin - High Contrast Dynamic Theme Styling
    ========================================================================== */
 
-/* Header Toggle Bar Button Glow & Styling */
+/* ==========================================================================
+   Theme tokens
+   --------------------------------------------------------------------------
+   Every surface, line and text colour in this file resolves through these
+   tokens. The defaults reproduce the original dark palette exactly, so dark
+   themes look identical to before.
+
+   `.gm-theme-light` is applied to the overlay at runtime (see GalleryView)
+   when the detected Discord background is bright, which flips the palette to
+   dark-on-light. This is driven by measuring Discord's own computed
+   background rather than guessing from a class name, so it works with custom
+   and third-party themes too, not just the built-in Light theme.
+   ========================================================================== */
+
+.gm-gallery-overlay-container {
+    /* Surfaces */
+    --gm-surface-overlay: rgba(18, 19, 23, 0.96);
+    --gm-surface-header: rgba(10, 11, 14, 0.95);
+    --gm-surface-card: rgba(18, 19, 23, 0.92);
+    --gm-surface-card-strong: rgba(18, 19, 23, 0.95);
+    --gm-surface-card-hover: rgba(30, 32, 40, 0.97);
+    --gm-surface-sunken: #0b0c0e;
+
+    /* Recessed controls (inputs, pill tracks) */
+    --gm-input-bg: rgba(0, 0, 0, 0.5);
+
+    /* Scrims and veils */
+    --gm-scrim: rgba(0, 0, 0, 0.55);
+    --gm-scrim-strong: rgba(0, 0, 0, 0.6);
+    --gm-scrim-heavy: rgba(0, 0, 0, 0.8);
+    --gm-veil: rgba(12, 13, 16, 0.55);
+    --gm-veil-hover: rgba(12, 13, 16, 0.42);
+    --gm-shadow: rgba(0, 0, 0, 0.7);
+
+    /* Text */
+    --gm-text-strong: #ffffff;
+    --gm-text: #dbdee1;
+    --gm-text-muted: #b5bac1;
+    --gm-text-faint: #949ba4;
+
+    /* Hairlines and translucent fills */
+    --gm-line-strong: rgba(255, 255, 255, 0.2);
+    --gm-line: rgba(255, 255, 255, 0.15);
+    --gm-line-soft: rgba(255, 255, 255, 0.1);
+    --gm-line-softer: rgba(255, 255, 255, 0.08);
+    --gm-fill: rgba(255, 255, 255, 0.12);
+    --gm-fill-soft: rgba(255, 255, 255, 0.06);
+    --gm-fill-faint: rgba(255, 255, 255, 0.03);
+
+    /* Accent — follows the user's Discord/theme accent when one is exposed. */
+    --gm-accent: var(--brand-experiment, #5865f2);
+}
+
+/* Light palette. Inverted lines/fills (dark hairlines over light surfaces) and
+   dark text, keeping the same structure so no rule needs a light-mode variant. */
+.gm-gallery-overlay-container.gm-theme-light {
+    --gm-surface-overlay: rgba(255, 255, 255, 0.97);
+    --gm-surface-header: rgba(243, 244, 246, 0.97);
+    --gm-surface-card: rgba(255, 255, 255, 0.96);
+    --gm-surface-card-strong: rgba(248, 249, 251, 0.98);
+    --gm-surface-card-hover: rgba(238, 240, 245, 0.99);
+    --gm-surface-sunken: #e6e8ec;
+
+    --gm-input-bg: rgba(0, 0, 0, 0.05);
+
+    --gm-scrim: rgba(0, 0, 0, 0.45);
+    --gm-scrim-strong: rgba(0, 0, 0, 0.55);
+    --gm-scrim-heavy: rgba(0, 0, 0, 0.72);
+    --gm-veil: rgba(232, 234, 238, 0.62);
+    --gm-veil-hover: rgba(232, 234, 238, 0.45);
+    --gm-shadow: rgba(20, 24, 40, 0.22);
+
+    --gm-text-strong: #0b0c0e;
+    --gm-text: #3a3f45;
+    --gm-text-muted: #5c6269;
+    --gm-text-faint: #7b828a;
+
+    --gm-line-strong: rgba(0, 0, 0, 0.22);
+    --gm-line: rgba(0, 0, 0, 0.14);
+    --gm-line-soft: rgba(0, 0, 0, 0.1);
+    --gm-line-softer: rgba(0, 0, 0, 0.07);
+    --gm-fill: rgba(0, 0, 0, 0.07);
+    --gm-fill-soft: rgba(0, 0, 0, 0.05);
+    --gm-fill-faint: rgba(0, 0, 0, 0.03);
+}
+
+/* Media wells stay dark in both palettes: photos and transparent PNGs read far
+   better against a neutral dark backdrop than against white. */
+.gm-gallery-overlay-container.gm-theme-light .gm-media-preview-wrapper {
+    --gm-surface-sunken: #2b2d31;
+}
+
+/* Header Toggle Bar Button.
+   This button is mounted inside Discord's own header, OUTSIDE the gallery overlay, so it
+   cannot use the overlay-scoped tokens above. It instead inherits Discord's interactive
+   colours, which every theme (light, dark, custom) is required to define — that keeps the
+   icon legible on light themes, where the previous hardcoded near-white was invisible. */
 .gm-header-button {
-    color: var(--interactive-normal, #dbdee1) !important;
-    transition: color 0.15s ease, transform 0.15s ease;
+    color: var(--interactive-normal, currentColor) !important;
+    transition: color 0.15s ease, transform 0.15s ease, filter 0.15s ease;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -13,13 +109,20 @@
 }
 
 .gm-header-button:hover {
-    color: var(--interactive-hover, #ffffff) !important;
+    color: var(--interactive-hover, var(--header-primary, currentColor)) !important;
     transform: scale(1.05);
+}
+
+/* Fallback for themes that define neither variable: force adequate contrast against the
+   surrounding header by following the theme's own primary header text colour. */
+.gm-header-button svg {
+    color: inherit;
 }
 
 .gm-header-button.active {
     color: var(--brand-experiment, #5865f2) !important;
-    filter: drop-shadow(0 0 8px rgba(88, 101, 242, 0.6));
+    /* A soft glow reads as "off" on light themes, so pair it with a solid accent tint. */
+    filter: drop-shadow(0 0 6px rgba(88, 101, 242, 0.55));
 }
 
 /* Floating Glassmorphism Main Overlay Container */
@@ -32,14 +135,14 @@
     z-index: 1000;
     display: flex;
     flex-direction: column;
-    background: var(--background-secondary-alt, rgba(18, 19, 23, 0.96)) !important;
+    background: var(--background-secondary-alt, var(--gm-surface-overlay)) !important;
     backdrop-filter: blur(28px) saturate(180%);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15)) !important;
+    border: 1px solid var(--border-subtle, var(--gm-line)) !important;
     border-radius: 16px;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--gm-line-softer);
     overflow: hidden;
-    color: #f2f3f5 !important;
+    color: var(--gm-text-strong) !important;
     font-family: var(--font-primary, "gg sans", "Noto Sans", sans-serif);
     animation: gmFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -60,8 +163,8 @@
     display: flex;
     flex-direction: column;
     padding: 16px 24px;
-    background: var(--background-tertiary, rgba(10, 11, 14, 0.95)) !important;
-    border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12)) !important;
+    background: var(--background-tertiary, var(--gm-surface-header)) !important;
+    border-bottom: 1px solid var(--border-subtle, var(--gm-fill)) !important;
     gap: 14px;
     flex-shrink: 0;
 }
@@ -85,7 +188,7 @@
     font-size: 20px;
     font-weight: 800;
     letter-spacing: -0.01em;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -96,27 +199,27 @@
     align-items: center;
     gap: 6px;
     padding: 6px 12px;
-    background: var(--background-modifier-selected, rgba(255, 255, 255, 0.15)) !important;
+    background: var(--background-modifier-selected, var(--gm-line)) !important;
     border-radius: 20px;
     font-size: 13px;
     font-weight: 700;
-    color: #ffffff !important;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--gm-text-strong) !important;
+    border: 1px solid var(--gm-line-soft);
 }
 
 .gm-count-badge {
     font-size: 13px;
     font-weight: 600;
-    color: #dbdee1 !important;
+    color: var(--gm-text) !important;
 }
 
 /* Scope Toggle (Channel vs Entire Server) */
 .gm-scope-toggle {
     display: flex;
-    background: rgba(0, 0, 0, 0.5) !important;
+    background: var(--gm-input-bg) !important;
     border-radius: 20px;
     padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border: 1px solid var(--gm-line) !important;
 }
 
 .gm-scope-btn {
@@ -124,7 +227,7 @@
     border-radius: 16px;
     border: none;
     background: transparent;
-    color: #dbdee1 !important;
+    color: var(--gm-text) !important;
     font-size: 13px;
     font-weight: 700;
     cursor: pointer;
@@ -132,12 +235,12 @@
 }
 
 .gm-scope-btn:hover {
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-scope-btn.active {
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     box-shadow: 0 2px 8px rgba(88, 101, 242, 0.5);
 }
 
@@ -145,10 +248,10 @@
 .gm-filter-tabs {
     display: flex;
     gap: 4px;
-    background: rgba(0, 0, 0, 0.5) !important;
+    background: var(--gm-input-bg) !important;
     padding: 4px;
     border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border: 1px solid var(--gm-line) !important;
 }
 
 .gm-tab-btn {
@@ -156,7 +259,7 @@
     border-radius: 16px;
     border: none;
     background: transparent;
-    color: #dbdee1 !important;
+    color: var(--gm-text) !important;
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.03em;
@@ -166,12 +269,12 @@
 }
 
 .gm-tab-btn:hover {
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-tab-btn.active {
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     box-shadow: 0 2px 8px rgba(88, 101, 242, 0.5);
 }
 
@@ -193,10 +296,10 @@
     width: 100%;
     height: 38px;
     padding: 0 42px 0 14px;
-    background: rgba(0, 0, 0, 0.5) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    background: var(--gm-input-bg) !important;
+    border: 1px solid var(--gm-line-strong) !important;
     border-radius: 8px;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     font-size: 14px;
     font-weight: 500;
     outline: none;
@@ -204,7 +307,7 @@
 }
 
 .gm-search-input::placeholder {
-    color: #949ba4 !important;
+    color: var(--gm-text-faint) !important;
 }
 
 .gm-search-input:focus {
@@ -218,7 +321,7 @@
     height: 30px;
     padding: 0 10px;
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     border: none;
     border-radius: 6px;
     font-size: 12px;
@@ -234,10 +337,10 @@
 .gm-date-input {
     height: 38px;
     padding: 0 10px;
-    background: rgba(0, 0, 0, 0.5) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    background: var(--gm-input-bg) !important;
+    border: 1px solid var(--gm-line-strong) !important;
     border-radius: 8px;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     font-size: 13px;
     font-weight: 600;
     outline: none;
@@ -249,8 +352,8 @@
     height: 36px;
     border-radius: 50%;
     border: none;
-    background: rgba(255, 255, 255, 0.12) !important;
-    color: #ffffff !important;
+    background: var(--gm-fill) !important;
+    color: var(--gm-text-strong) !important;
     font-size: 16px;
     display: flex;
     align-items: center;
@@ -261,7 +364,7 @@
 
 .gm-close-btn:hover {
     background: #f23f43 !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 /* Gallery Content Area */
@@ -282,7 +385,7 @@
 }
 
 .gm-gallery-content::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2) !important;
+    background: var(--gm-line-strong) !important;
     border-radius: 4px;
 }
 
@@ -339,9 +442,9 @@
 
 /* Media Card Styling */
 .gm-media-card {
-    background: rgba(18, 19, 23, 0.92) !important;
+    background: var(--gm-surface-card) !important;
     border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border: 1px solid var(--gm-line-soft) !important;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -352,14 +455,14 @@
 .gm-media-card:hover {
     transform: translateY(-4px);
     border-color: var(--brand-experiment, #5865f2) !important;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 12px 28px var(--gm-scrim-strong);
 }
 
 .gm-media-preview-wrapper {
     position: relative;
     width: 100%;
     aspect-ratio: 1 / 1;
-    background: #0b0c0e !important;
+    background: var(--gm-surface-sunken) !important;
     overflow: hidden;
 }
 
@@ -389,7 +492,7 @@
     align-items: center;
     justify-content: center;
     padding: 16px;
-    background: radial-gradient(circle at center, rgba(88, 101, 242, 0.2) 0%, rgba(11, 12, 14, 0.95) 100%) !important;
+    background: radial-gradient(circle at center, rgba(88, 101, 242, 0.2) 0%, var(--gm-surface-sunken) 100%) !important;
     text-align: center;
     position: relative;
 }
@@ -403,7 +506,7 @@
     font-size: 11px;
     font-weight: 800;
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     letter-spacing: 0.05em;
 }
 
@@ -415,7 +518,7 @@
 .gm-file-name-text {
     font-size: 14px;
     font-weight: 700;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     max-width: 90%;
     white-space: nowrap;
     overflow: hidden;
@@ -425,7 +528,7 @@
 .gm-file-size-badge {
     font-size: 12px;
     font-weight: 600;
-    color: #dbdee1 !important;
+    color: var(--gm-text) !important;
     margin-top: 4px;
 }
 
@@ -436,13 +539,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--gm-fill-faint);
 }
 
 .gm-spinner-icon {
     width: 28px;
     height: 28px;
-    border: 3px solid rgba(255, 255, 255, 0.15);
+    border: 3px solid var(--gm-line);
     border-top-color: var(--brand-experiment, #5865f2);
     border-radius: 50%;
     animation: gmSpin 0.8s linear infinite;
@@ -473,11 +576,11 @@
     height: 52px;
     border-radius: 50%;
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 4px 16px var(--gm-scrim-strong);
     transition: transform 0.15s ease;
 }
 
@@ -495,10 +598,10 @@
     font-size: 11px;
     font-weight: 800;
     letter-spacing: 0.05em;
-    background: rgba(0, 0, 0, 0.8) !important;
+    background: var(--gm-scrim-heavy) !important;
     backdrop-filter: blur(8px);
-    color: #ffffff !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    color: var(--gm-text-strong) !important;
+    border: 1px solid var(--gm-line-strong) !important;
 }
 
 .gm-type-badge.video {
@@ -524,13 +627,13 @@
     right: 8px;
     font-size: 12px;
     font-weight: 700;
-    color: #ffffff !important;
-    background: rgba(0, 0, 0, 0.8) !important;
+    color: var(--gm-text-strong) !important;
+    background: var(--gm-scrim-heavy) !important;
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     padding: 4px 10px;
     border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border: 1px solid var(--gm-line-strong) !important;
     pointer-events: none;
     transition: opacity 0.15s ease;
 }
@@ -572,13 +675,13 @@
 
 .gm-action-btn.primary {
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-action-btn.secondary {
     background: rgba(0, 0, 0, 0.85) !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    color: var(--gm-text-strong) !important;
+    border: 1px solid var(--gm-line-strong) !important;
 }
 
 .gm-action-btn:hover {
@@ -591,8 +694,8 @@
     align-items: center;
     gap: 10px;
     padding: 12px;
-    background: rgba(18, 19, 23, 0.95) !important;
-    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    background: var(--gm-surface-card-strong) !important;
+    border-top: 1px solid var(--gm-line-softer) !important;
 }
 
 .gm-author-avatar {
@@ -625,13 +728,13 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-author-name {
     font-size: 14px;
     font-weight: 700;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -640,7 +743,7 @@
 .gm-author-username {
     font-size: 12px;
     font-weight: 500;
-    color: #dbdee1 !important;
+    color: var(--gm-text) !important;
 }
 
 /* Empty / Loading States */
@@ -651,13 +754,13 @@
     justify-content: center;
     padding: 60px 20px;
     text-align: center;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-empty-title {
     font-size: 18px;
     font-weight: 700;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     margin-top: 12px;
 }
 
@@ -667,7 +770,7 @@
     justify-content: center;
     padding: 24px;
     gap: 8px;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     font-size: 14px;
     font-weight: 600;
 }
@@ -700,16 +803,16 @@
     width: 280px;
     max-height: 320px;
     overflow-y: auto;
-    background: var(--background-floating, #111214) !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    background: var(--gm-surface-overlay) !important;
+    border: 1px solid var(--gm-line-strong) !important;
     border-radius: 10px;
     padding: 10px;
     z-index: 1400;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.75);
+    box-shadow: 0 16px 40px var(--gm-shadow);
 }
 
 .gm-dropdown-title {
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     font-size: 12px;
     font-weight: 800;
     margin-bottom: 8px;
@@ -723,7 +826,7 @@
     margin-bottom: 6px;
     border: none;
     border-radius: 6px;
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     background: rgba(88, 101, 242, 0.35) !important;
     cursor: pointer;
     font-size: 12px;
@@ -732,7 +835,7 @@
 
 .gm-dropdown-empty {
     padding: 10px 8px;
-    color: #b5bac1 !important;
+    color: var(--gm-text-muted) !important;
     font-size: 13px;
 }
 
@@ -742,14 +845,14 @@
     gap: 8px;
     padding: 7px 8px;
     border-radius: 6px;
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     font-size: 13px;
     cursor: pointer;
 }
 
 .gm-channel-option:hover,
 .gm-author-suggestion:hover {
-    background: rgba(255, 255, 255, 0.08) !important;
+    background: var(--gm-line-softer) !important;
 }
 
 .gm-author-input {
@@ -771,7 +874,7 @@
     border: none;
     border-radius: 6px;
     background: transparent !important;
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     cursor: pointer;
     text-align: left;
 }
@@ -784,7 +887,7 @@
 }
 
 .gm-author-suggestion small {
-    color: #b5bac1 !important;
+    color: var(--gm-text-muted) !important;
     flex-shrink: 0;
 }
 
@@ -796,7 +899,7 @@
     border: none;
     border-radius: 50%;
     background: transparent !important;
-    color: #b5bac1 !important;
+    color: var(--gm-text-muted) !important;
     cursor: pointer;
     font-size: 20px;
     line-height: 28px;
@@ -852,7 +955,7 @@
     font-size: 12px;
     font-weight: 800;
     z-index: 5;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 6px 18px var(--gm-input-bg);
 }
 
 .gm-scroll-sentinel {
@@ -878,8 +981,8 @@
 
 .gm-end-state {
     width: fit-content;
-    color: #b5bac1 !important;
-    background: rgba(255, 255, 255, 0.06) !important;
+    color: var(--gm-text-muted) !important;
+    background: var(--gm-fill-soft) !important;
 }
 
 .gm-scroll-top-btn {
@@ -890,9 +993,9 @@
     height: 48px;
     border-radius: 50%;
     background: var(--brand-experiment, #5865f2) !important;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     border: none;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 8px 24px var(--gm-scrim-strong);
     font-size: 20px;
     cursor: pointer;
     z-index: 1300;
@@ -911,11 +1014,11 @@
     justify-content: space-between;
     gap: 12px;
     padding: 14px 16px !important;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--gm-line-softer);
 }
 
 .gm-modal-title {
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     font-weight: 800;
     overflow: hidden;
     white-space: nowrap;
@@ -949,9 +1052,9 @@ video.gm-modal-media {
     align-items: center;
     justify-content: center;
     gap: 10px;
-    color: #fff !important;
+    color: var(--gm-text-strong) !important;
     background: radial-gradient(circle at center, rgba(88, 101, 242, 0.18), rgba(0, 0, 0, 0.28));
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--gm-line-soft);
     border-radius: 12px;
 }
 
@@ -967,7 +1070,7 @@ video.gm-modal-media {
 }
 
 .gm-modal-file-meta {
-    color: #b5bac1 !important;
+    color: var(--gm-text-muted) !important;
     font-size: 13px;
     font-weight: 650;
 }
@@ -1009,7 +1112,7 @@ video.gm-modal-media {
 }
 
 .gm-date-separator {
-    color: #b5bac1;
+    color: var(--gm-text-muted);
     font-size: 12px;
     font-weight: 700;
 }
@@ -1043,14 +1146,14 @@ video.gm-modal-media {
 .gm-skeleton-card {
     cursor: default;
     pointer-events: none;
-    border-color: rgba(255, 255, 255, 0.06) !important;
+    border-color: var(--gm-fill-soft) !important;
     animation: gmSkeletonIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .gm-skeleton-card:hover {
     transform: none;
     box-shadow: none;
-    border-color: rgba(255, 255, 255, 0.06) !important;
+    border-color: var(--gm-fill-soft) !important;
 }
 
 @keyframes gmSkeletonIn {
@@ -1085,7 +1188,7 @@ video.gm-modal-media {
 }
 
 .gm-skeleton-footer {
-    background: rgba(18, 19, 23, 0.95) !important;
+    background: var(--gm-surface-card-strong) !important;
 }
 
 .gm-skeleton-avatar {
@@ -1213,13 +1316,19 @@ video.gm-modal-media {
     flex-shrink: 0;
 }
 
+/* Control groups keep their intrinsic size; only the title block absorbs slack. This is what
+   stops a filter change from shifting the scope toggle / tabs / density switcher sideways. */
+.gm-header-controls {
+    flex: 0 0 auto;
+}
+
 .gm-icon-btn {
     width: 36px;
     height: 36px;
     border-radius: 50%;
     border: none;
-    background: rgba(255, 255, 255, 0.12) !important;
-    color: #dbdee1 !important;
+    background: var(--gm-fill) !important;
+    color: var(--gm-text) !important;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1229,8 +1338,8 @@ video.gm-modal-media {
 }
 
 .gm-icon-btn:hover {
-    background: rgba(255, 255, 255, 0.2) !important;
-    color: #ffffff !important;
+    background: var(--gm-line-strong) !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-motion-full .gm-icon-btn:hover svg {
@@ -1247,10 +1356,12 @@ video.gm-modal-media {
     margin-left: 0;
 }
 
-/* Long channel names must truncate rather than shove the controls off-screen. */
+/* Long channel names must truncate rather than shove the controls off-screen.
+   The block is also given a stable basis so its contents changing (channel pill text,
+   media count) cannot push the control groups to its right around. */
 .gm-header-left {
     min-width: 0;
-    flex-shrink: 1;
+    flex: 1 1 auto;
 }
 
 /* Keep the flex layout from the base rule (the author pill relies on its gap) and truncate
@@ -1263,8 +1374,14 @@ video.gm-modal-media {
     white-space: nowrap;
 }
 
+/* Reserve a stable slot so the header never reflows as the count changes. Without this,
+   "12 loaded" -> "1,204 loaded of 8,431" resizes the badge and visibly shifts every control
+   to its right each time the filter changes. */
 .gm-count-badge {
     white-space: nowrap;
+    min-width: 15ch;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
 }
 
 .gm-plugin-title {
@@ -1500,24 +1617,24 @@ video.gm-modal-media {
     justify-content: center;
     gap: 4px;
     cursor: pointer;
-    background: rgba(12, 13, 16, 0.55);
+    background: var(--gm-veil);
     backdrop-filter: blur(22px) saturate(120%);
     -webkit-backdrop-filter: blur(22px) saturate(120%);
     transition: background 0.2s ease;
 }
 
 .gm-spoiler-veil:hover {
-    background: rgba(12, 13, 16, 0.42);
+    background: var(--gm-veil-hover);
 }
 
 .gm-spoiler-label {
     font-size: 11px;
     font-weight: 900;
     letter-spacing: 0.08em;
-    color: #ffffff !important;
+    color: var(--gm-text-strong) !important;
     padding: 5px 12px;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--gm-scrim-strong);
     border: 1px solid rgba(255, 255, 255, 0.25);
 }
 
@@ -1565,7 +1682,7 @@ video.gm-modal-media {
     inset: auto 0 0 0;
     height: 45%;
     pointer-events: none;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+    background: linear-gradient(to top, var(--gm-scrim), transparent);
     opacity: 0;
     transition: opacity 0.28s ease;
     z-index: 1;
@@ -1580,7 +1697,7 @@ video.gm-modal-media {
 }
 
 .gm-motion-full .gm-media-card:hover .gm-card-footer {
-    background: rgba(30, 32, 40, 0.97) !important;
+    background: var(--gm-surface-card-hover) !important;
 }
 
 /* Type badge and date badge drift in from their edges on hover. */
@@ -1667,5 +1784,5 @@ video.gm-modal-media {
 
 /* Subtle tier keeps the glow but drops the movement. */
 .gm-motion-subtle .gm-media-card:hover {
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(88, 101, 242, 0.4);
+    box-shadow: 0 12px 28px var(--gm-scrim-strong), 0 0 0 1px rgba(88, 101, 242, 0.4);
 }

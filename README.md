@@ -21,6 +21,8 @@ A Vencord user plugin that adds a Discord header-bar Gallery Mode button. Galler
 - Shift/Ctrl-click the media type tabs to combine types (e.g. image + video + embed)
 - GIF and video playback modes: always, on hover, or only when opened
 - Spoiler-tagged and age-restricted media can be blurred until clicked
+- Optional author footer — turn it off for a pure gallery wall
+- Adapts to light, dark and custom Discord themes automatically
 
 ## Installation
 

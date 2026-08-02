@@ -13,6 +13,7 @@ import {
     useState
 } from "@webpack/common";
 import { settings } from "../settings";
+import { useThemeTone } from "../useThemeTone";
 import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
 import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
@@ -99,6 +100,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const { animations, defaultCardSize, layout, nsfw, prefetchNextPage, skeletonPlaceholders } =
         settings.use(["animations", "defaultCardSize", "layout", "nsfw", "prefetchNextPage", "skeletonPlaceholders"]);
     const motion: string = animations || "full";
+    // Measured from Discord's live background so custom/light themes are handled, not guessed.
+    const themeTone = useThemeTone();
     const channelId = SelectedChannelStore?.getChannelId();
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
     // NOTE: currentChannel.guild_id is undefined for DM / group-DM channels. We must NOT fall back
@@ -456,6 +459,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
             if (err?.status === 429 || err?.body?.retry_after || err?.retry_after) {
                 setError("Discord Search is rate limited right now. Wait a few seconds, then retry.");
+            } else if (err?.body?.code === 50001) {
+                // "Missing Access" — usually one selected channel the account can't read, rather
+                // than the whole server being off limits.
+                setError(scope === "guild" && effectiveSelectedChannelIds.length > 0
+                    ? "You don't have access to one of the selected channels. Deselect it, or switch to this channel only."
+                    : "You don't have permission to search this channel. Try another channel or the server scope.");
             } else if (err?.status === 403) {
                 setError("Discord denied access to search this channel/server. Check your permissions.");
             } else if (err?.body?.code === 50024) {
@@ -816,7 +825,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const viewContent = (
         <div
-            className={`gm-gallery-overlay-container gm-motion-${motion}`}
+            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone}`}
             ref={containerRef}
             tabIndex={-1}
             role="dialog"
@@ -834,11 +843,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             Gallery Mode
                         </h2>
                         <span className="gm-channel-pill">{channelPillLabel}</span>
-                        {mediaItems.length > 0 && (
-                            <span className="gm-count-badge">
-                                {mediaItems.length.toLocaleString()} loaded{totalResults > mediaItems.length ? ` of ${totalResults.toLocaleString()}` : ""}
-                            </span>
-                        )}
+                        {/* Always rendered (just blank when empty) and given a fixed min-width, so
+                            switching filters can't resize it and shove the whole header sideways.
+                            The digits use tabular figures for the same reason: proportional digits
+                            change width as the count ticks up during a load. */}
+                        <span className="gm-count-badge">
+                            {mediaItems.length > 0
+                                ? `${mediaItems.length.toLocaleString()} loaded${totalResults > mediaItems.length ? ` of ${totalResults.toLocaleString()}` : ""}`
+                                : ""}
+                        </span>
                     </div>
 
                     <div className="gm-header-controls">
