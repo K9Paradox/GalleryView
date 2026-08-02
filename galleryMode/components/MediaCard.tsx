@@ -131,10 +131,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-// Memoized so gallery-level re-renders (typing in the search box, the rate-limit
-// tick, badge updates, …) don't re-render hundreds of cards that didn't change.
-// Items keep referential identity across pagination thanks to deduplicateItems().
-export const MediaCard = React.memo(function MediaCard({ item, onCloseGallery }: MediaCardProps) {
+function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
@@ -345,4 +342,19 @@ export const MediaCard = React.memo(function MediaCard({ item, onCloseGallery }:
             {copySuccess && <div className="gm-copy-toast">Copied!</div>}
         </div>
     );
-});
+}
+
+// Memoized so gallery-level re-renders (typing in the search box, the rate-limit
+// tick, badge updates, …) don't re-render hundreds of cards that didn't change.
+// Items keep referential identity across pagination thanks to deduplicateItems().
+//
+// NOTE: the memo wrapper is created lazily on first render, not at module scope.
+// Vencord's @webpack/common exports (React included) are still undefined while
+// plugin modules are being evaluated, so calling React.memo() at the top level
+// crashes the whole Vencord bundle before it can boot.
+let MemoizedMediaCard: React.ComponentType<MediaCardProps> | null = null;
+
+export function MediaCard(props: MediaCardProps) {
+    MemoizedMediaCard ??= React.memo(MediaCardImpl);
+    return <MemoizedMediaCard {...props} />;
+}
