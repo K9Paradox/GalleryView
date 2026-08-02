@@ -305,19 +305,17 @@
     margin-bottom: 16px;
 }
 
-/* Cards whose natural size Discord told us about keep the inline aspect-ratio set by
-   MediaCard, so the column height is correct before a single byte is decoded.
-   Cards without dimensions (external embeds, files) fall back to a 4:3 placeholder box
-   rather than collapsing to 0px — collapsing is what caused the layout to thrash and
-   the infinite-scroll sentinel to fire repeatedly. */
+/* ONLY masonry consumes the per-item ratio that MediaCard publishes as --gm-item-ratio.
+   Cards whose natural size Discord told us about get their exact ratio, so the column height
+   is correct before a single byte is decoded. Cards without dimensions (external embeds,
+   files) fall back to a 4:3 placeholder box rather than collapsing to 0px — collapsing is
+   what caused the layout to thrash and the infinite-scroll sentinel to fire repeatedly.
+
+   The uniform grid deliberately ignores --gm-item-ratio and keeps its 1:1 tiles (set by the
+   base .gm-media-preview-wrapper rule). */
 .gm-media-grid.gm-masonry .gm-media-preview-wrapper {
     height: auto;
-    aspect-ratio: 4 / 3;
-}
-
-.gm-media-grid.gm-masonry .gm-media-preview-wrapper.gm-has-ratio {
-    /* aspect-ratio comes from the inline style */
-    aspect-ratio: auto;
+    aspect-ratio: var(--gm-item-ratio, 4 / 3);
 }
 
 .gm-media-grid.gm-masonry .gm-media-element {

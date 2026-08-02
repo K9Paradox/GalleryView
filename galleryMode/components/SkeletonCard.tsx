@@ -5,7 +5,6 @@ interface SkeletonGridProps {
     count: number;
     /** Reuse the aspect ratios of already-loaded media so the fake page matches the real one. */
     ratios?: number[];
-    masonry?: boolean;
 }
 
 // A deterministic pseudo-random sequence keyed on index — the placeholder heights stay stable
@@ -21,13 +20,13 @@ function fallbackRatio(index: number) {
  * from the aspect ratios of media already on screen, so the placeholder page is a close visual
  * match for whatever is about to replace it.
  */
-export function SkeletonGrid({ count, ratios, masonry }: SkeletonGridProps) {
+export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
     const cards: React.ReactNode[] = [];
 
     for (let i = 0; i < count; i++) {
-        const ratio = masonry
-            ? (ratios?.length ? ratios[i % ratios.length] : fallbackRatio(i))
-            : 1;
+        // Only masonry varies placeholder heights. In the uniform grid the wrapper's own 1:1
+        // rule applies and --gm-item-ratio is simply never read, matching real MediaCards.
+        const ratio = ratios?.length ? ratios[i % ratios.length] : fallbackRatio(i);
 
         cards.push(
             <div
@@ -39,7 +38,7 @@ export function SkeletonGrid({ count, ratios, masonry }: SkeletonGridProps) {
             >
                 <div
                     className="gm-media-preview-wrapper gm-skeleton-preview"
-                    style={{ aspectRatio: `${Math.min(Math.max(ratio, 0.4), 3)}` }}
+                    style={{ "--gm-item-ratio": `${Math.min(Math.max(ratio, 0.4), 3)}` } as React.CSSProperties}
                 />
                 <div className="gm-card-footer gm-skeleton-footer">
                     <div className="gm-skeleton-avatar" />

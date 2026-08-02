@@ -972,11 +972,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     >
                         {!loading && mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
                         {showSkeletons && (
-                            <SkeletonGrid
-                                count={skeletonCount}
-                                ratios={recentRatios}
-                                masonry={layout === "masonry"}
-                            />
+                            <SkeletonGrid count={skeletonCount} ratios={recentRatios} />
                         )}
                     </div>
                 )}

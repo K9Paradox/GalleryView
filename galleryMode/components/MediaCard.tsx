@@ -223,14 +223,19 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
     const avatar = avatarUrl(item);
 
     // Reserve the final box before the bytes arrive. Discord's search payload already tells us the
-    // natural width/height of attachments and most embeds, so in masonry mode we can pin the exact
-    // aspect ratio up front instead of letting each card grow from 0px to its real height as images
+    // natural width/height of attachments and most embeds, so masonry can pin the exact aspect
+    // ratio up front instead of letting each card grow from 0px to its real height as images
     // decode — that growth is what makes the masonry grid "spaz out" and re-trigger infinite scroll.
+    //
+    // The ratio is published as a CSS custom property rather than an inline `aspect-ratio`:
+    // inline styles outrank every stylesheet rule, so setting it directly leaked masonry's
+    // variable heights into the uniform grid layout. As a variable, each layout decides for
+    // itself whether to consume it (masonry does; grid keeps its 1:1 tiles).
     const naturalRatio = item.width && item.height ? item.width / item.height : undefined;
     const previewStyle = naturalRatio
         // Clamp to the same bounds the CSS enforces (max-height: 72vh) so a 1x5000 image can't
         // create a mile-tall column.
-        ? { aspectRatio: `${Math.min(Math.max(naturalRatio, 0.4), 3)}` } as React.CSSProperties
+        ? { "--gm-item-ratio": `${Math.min(Math.max(naturalRatio, 0.4), 3)}` } as React.CSSProperties
         : undefined;
 
     return (
@@ -248,7 +253,7 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
             }}
         >
             <div
-                className={`gm-media-preview-wrapper${naturalRatio ? " gm-has-ratio" : ""}`}
+                className="gm-media-preview-wrapper"
                 style={previewStyle}
             >
                 <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>
