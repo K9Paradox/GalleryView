@@ -1943,3 +1943,14 @@ video.gm-modal-media {
 .gm-motion-off .gm-category-caret {
     transition: none;
 }
+
+/* Threads listed under their owning channel in the server-wide picker. Indented and dimmed
+   so the channel/thread hierarchy is readable at a glance. */
+.gm-channel-category .gm-channel-option.gm-thread-option {
+    padding-left: 30px;
+}
+
+.gm-thread-option span {
+    color: var(--gm-text-muted) !important;
+    font-size: 12px;
+}

@@ -115,6 +115,24 @@ function groupChannelsByCategory(channels: any[], resolveChannel: (id: string) =
     });
 }
 
+/**
+ * Interleave threads beneath the channel that owns them.
+ *
+ * GuildChannelStore.getChannels() only returns SELECTABLE/VOCAL buckets — it contains no
+ * threads at all, which is why threads never appeared in the server-wide channel picker.
+ * Threads have to come from ActiveJoinedThreadsStore and be merged in manually.
+ */
+function interleaveThreads(channels: any[], threadsByParent: Map<string, any[]>): any[] {
+    if (threadsByParent.size === 0) return channels;
+
+    const result: any[] = [];
+    for (const channel of channels) {
+        result.push(channel);
+        for (const thread of threadsByParent.get(channel.id) ?? []) result.push(thread);
+    }
+    return result;
+}
+
 function normaliseGuildChannels(raw: any): any[] {
     const buckets = [raw?.SELECTABLE, raw?.VOCAL, raw?.TEXTUAL, raw?.THREADS].filter(Boolean);
     const channels = buckets.flatMap(bucket => Array.isArray(bucket) ? bucket : Object.values(bucket));
@@ -398,6 +416,29 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         [siblingThreads]
     );
 
+    // Threads across the whole guild, keyed by the channel that owns them. GuildChannelStore
+    // has no thread bucket, so without this the server-wide picker silently omits every thread.
+    const guildThreadsByParent = React.useMemo(() => {
+        const byParent = new Map<string, any[]>();
+        if (!guildId || !ActiveJoinedThreadsStore) return byParent;
+
+        try {
+            const grouped = ActiveJoinedThreadsStore.getActiveJoinedThreadsForGuild(guildId) || {};
+            for (const [parentId, entries] of Object.entries(grouped)) {
+                const threads = Object.values(entries as Record<string, any>)
+                    .map((entry: any) => entry?.channel || entry)
+                    .filter((channel: any) => channel?.id)
+                    .sort((a: any, b: any) => String(a.name || "").localeCompare(String(b.name || "")));
+
+                if (threads.length > 0) byParent.set(parentId, threads);
+            }
+        } catch (err) {
+            console.warn("[GalleryMode] Failed to read guild thread list", err);
+        }
+
+        return byParent;
+    }, [guildId]);
+
     // Categories the user has collapsed in the picker. Collapsing is purely visual — it never
     // changes which channels are selected or searched.
     const [collapsedCategories, setCollapsedCategories] = useState<string[]>([]);
@@ -405,13 +446,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [channelFilter, setChannelFilter] = useState<string>("");
 
     const channelCategories = React.useMemo(() => {
+        const withThreads = interleaveThreads(guildChannels, guildThreadsByParent);
+
         const needle = channelFilter.trim().toLowerCase();
         const visible = needle
-            ? guildChannels.filter((channel: any) => String(channel.name || "").toLowerCase().includes(needle))
-            : guildChannels;
+            ? withThreads.filter((channel: any) => String(channel.name || "").toLowerCase().includes(needle))
+            : withThreads;
 
         return groupChannelsByCategory(visible, (id: string) => (id ? ChannelStore?.getChannel(id) : null));
-    }, [guildChannels, channelFilter]);
+    }, [guildChannels, guildThreadsByParent, channelFilter]);
 
 
     const toggleCategoryCollapsed = (id: string) => {
@@ -428,7 +471,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             : [...prev, ...ids.filter(id => !prev.includes(id))]);
     };
 
-    const availableGuildChannelIds = React.useMemo(() => new Set(guildChannels.map((channel: any) => channel.id)), [guildChannels]);
+    // Must include threads: this set is used to validate (and prune) the user's selection, so
+    // omitting them would silently discard any thread the user ticked in the picker.
+    const availableGuildChannelIds = React.useMemo(() => {
+        const ids = new Set<string>(guildChannels.map((channel: any) => channel.id));
+        for (const threads of guildThreadsByParent.values()) {
+            for (const thread of threads) ids.add(thread.id);
+        }
+        return ids;
+    }, [guildChannels, guildThreadsByParent]);
 
     const effectiveSelectedChannelIds = React.useMemo(() => {
         if (selectedChannelIds.length === 0 || availableGuildChannelIds.size === 0) return selectedChannelIds;
@@ -1360,11 +1411,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                         setChannelFilter("");
                                     }}
                                 >
-                                    # {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} Channels` : "Select Channels"} ▼
+                                    # {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} Selected` : "Select Channels"} ▼
                                 </button>
                                 {showChannelDropdown && (
                                     <div className="gm-channel-dropdown">
-                                        <div className="gm-dropdown-title">Select Channels ({guildChannels.length} available)</div>
+                                        <div className="gm-dropdown-title">
+                                            Select Channels &amp; Threads ({channelCategories.reduce((total, category) => total + category.channels.length, 0)} shown)
+                                        </div>
                                         <input
                                             type="text"
                                             className="gm-dropdown-filter"
@@ -1376,7 +1429,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                             <button className="gm-dropdown-link" onClick={() => setSelectedChannelIds([])}>Clear selected channels</button>
                                         )}
                                         {guildChannels.length === 0 ? (
-                                            <div className="gm-dropdown-empty">No searchable text, thread, forum, or media channels found in this server.</div>
+                                            <div className="gm-dropdown-empty">
+                                                {channelFilter.trim()
+                                                    ? "No channels or threads match that filter."
+                                                    : "No searchable text, thread, forum, or media channels found in this server."}
+                                            </div>
                                         ) : channelCategories.map(category => {
                                             const collapsed = collapsedCategories.includes(category.id);
                                             const selectedInCategory = category.channels.filter(
@@ -1411,16 +1468,22 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                         </button>
                                                     </div>
 
-                                                    {!collapsed && category.channels.map((channel: any) => (
-                                                        <label key={channel.id} className="gm-channel-option">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={effectiveSelectedChannelIds.includes(channel.id)}
-                                                                onChange={() => toggleChannelSelection(channel.id)}
-                                                            />
-                                                            <span>#{channel.name}</span>
-                                                        </label>
-                                                    ))}
+                                                    {!collapsed && category.channels.map((channel: any) => {
+                                                        const thread = THREAD_CHANNEL_TYPES.has(channel.type);
+                                                        return (
+                                                            <label
+                                                                key={channel.id}
+                                                                className={`gm-channel-option${thread ? " gm-thread-option" : ""}`}
+                                                            >
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={effectiveSelectedChannelIds.includes(channel.id)}
+                                                                    onChange={() => toggleChannelSelection(channel.id)}
+                                                                />
+                                                                <span>{thread ? `🧵 ${channel.name}` : `#${channel.name}`}</span>
+                                                            </label>
+                                                        );
+                                                    })}
                                                 </div>
                                             );
                                         })}
