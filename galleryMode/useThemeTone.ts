@@ -66,28 +66,38 @@ export function useThemeTone(): ThemeTone {
 
         setTone(detect());
 
-        // Re-detect when the user switches themes. Discord swaps classes on <html>/#app-mount,
-        // and QuickCSS edits mutate a <style> tag, so watch both structure and attributes.
+        // Re-detect when the user switches themes.
+        //
+        // Only `class` is watched, deliberately. Discord mutates inline `style` on <html> and
+        // #app-mount very frequently (custom properties, layout measurements), and each
+        // notification triggered a getComputedStyle + setState. On a gallery holding hundreds
+        // of cards, a burst of those re-rendered the whole tree repeatedly and locked the
+        // client up for several seconds. Theme switches always change a class.
         if (typeof MutationObserver === "undefined") return;
 
-        let frame = 0;
+        let timer: number | null = null;
         const schedule = () => {
-            // Coalesce bursts of mutations into one measurement per frame.
-            if (frame) return;
-            frame = requestAnimationFrame(() => {
-                frame = 0;
-                setTone(detect());
-            });
+            // Debounce rather than per-frame: a theme switch is a rare, coarse event, and this
+            // guarantees at most one measurement per burst no matter how noisy the DOM is.
+            if (timer != null) return;
+            timer = window.setTimeout(() => {
+                timer = null;
+                // Only re-render when the tone genuinely flipped.
+                setTone(previous => {
+                    const next = detect();
+                    return next === previous ? previous : next;
+                });
+            }, 150);
         };
 
         const observer = new MutationObserver(schedule);
-        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style"] });
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
         const appMount = document.getElementById("app-mount");
-        if (appMount) observer.observe(appMount, { attributes: true, attributeFilter: ["class", "style"] });
+        if (appMount) observer.observe(appMount, { attributes: true, attributeFilter: ["class"] });
 
         return () => {
-            if (frame) cancelAnimationFrame(frame);
+            if (timer != null) clearTimeout(timer);
             observer.disconnect();
         };
     }, []);

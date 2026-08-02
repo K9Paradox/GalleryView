@@ -177,9 +177,43 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
      * A ref callback runs synchronously on mount, so we can catch the already-complete case.
      * `naturalWidth > 0` distinguishes a genuinely decoded image from a broken one.
      */
+    const imgRef = React.useRef<HTMLImageElement | null>(null);
+
     const markLoadedIfComplete = React.useCallback((img: HTMLImageElement | null) => {
+        imgRef.current = img;
         if (img?.complete && img.naturalWidth > 0) setMediaLoaded(true);
     }, []);
+
+    /**
+     * Safety net for the "image stays blank until I hover it" class of bug.
+     *
+     * Between `loading="lazy"`, `content-visibility: auto` and compositor layer promotion,
+     * Chromium can end up with an image that is fetched but never painted, or whose `load`
+     * event we missed. Once the card scrolls into view we explicitly poll `complete` and, if
+     * needed, call decode() — both are cheap no-ops for an image that is already fine.
+     */
+    React.useEffect(() => {
+        if (mediaLoaded || hasError) return;
+        const img = imgRef.current;
+        if (!img || typeof IntersectionObserver === "undefined") return;
+
+        const observer = new IntersectionObserver(entries => {
+            if (!entries[0]?.isIntersecting) return;
+
+            if (img.complete && img.naturalWidth > 0) {
+                setMediaLoaded(true);
+                return;
+            }
+            // decode() resolves once the bitmap is ready, covering the case where `load`
+            // fired before React attached its handler.
+            img.decode?.()
+                .then(() => setMediaLoaded(true))
+                .catch(() => { /* still loading, or genuinely broken; onError handles it */ });
+        }, { rootMargin: "200px" });
+
+        observer.observe(img);
+        return () => observer.disconnect();
+    }, [mediaLoaded, hasError, item.id]);
 
     // Hover-driven playback. Autoplay attributes alone can't express "play on hover", and
     // toggling the `src` would re-download the file, so we drive the element imperatively.
@@ -406,13 +440,15 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
                                 <div className="gm-spinner-icon" />
                             </div>
                         )}
-                        {/* NOTE: deliberately no loading="lazy". Combined with the
-                            `content-visibility: auto` we set on grid cards, Chromium can leave a
-                            lazy image permanently un-fetched until something forces a repaint —
-                            the "image only appears when I hover it" bug. content-visibility
-                            already skips off-screen layout/paint, so lazy adds little here. */}
+                        {/* `loading="lazy"` is back, but the two things that previously broke it
+                            are gone: the blur filter no longer sits on every image, and cards are
+                            no longer each promoted to their own compositor layer. Without lazy,
+                            opening a 600-card gallery kicks off 600 simultaneous CDN fetches,
+                            which starves the visible ones — that made the hover symptom worse,
+                            not better. */}
                         <img
                             ref={markLoadedIfComplete}
+                            loading="lazy"
                             src={displaySrc}
                             alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}

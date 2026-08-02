@@ -494,6 +494,11 @@
     display: block;
     opacity: 0;
     transition: opacity 0.25s ease, transform 0.25s ease;
+    /* Layer 0: the media itself. Explicitly positioned + z-indexed so the badges and overlays
+       stacked on top of it always win, regardless of DOM order or compositor promotion from
+       the blur-up filter/transform. */
+    position: relative;
+    z-index: 0;
 }
 
 .gm-media-element.loaded {
@@ -556,6 +561,7 @@
 /* Skeleton Loading */
 .gm-media-skeleton {
     position: absolute;
+    z-index: 1;
     inset: 0;
     display: flex;
     align-items: center;
@@ -579,6 +585,7 @@
 /* Video Play Overlay */
 .gm-video-play-overlay {
     position: absolute;
+    z-index: 1;
     inset: 0;
     display: flex;
     align-items: center;
@@ -609,9 +616,10 @@
     transform: scale(1.1);
 }
 
-/* Type Badge (Top Left) */
+/* Type Badge (Top Left) — layer 2, above the media (0) and the hover scrim (1). */
 .gm-type-badge {
     position: absolute;
+    z-index: 2;
     top: 8px;
     left: 8px;
     padding: 3px 8px;
@@ -644,6 +652,7 @@
 /* Bottom-Right Date Glass Pill Badge */
 .gm-card-date-badge-bottom-right {
     position: absolute;
+    z-index: 2;
     bottom: 8px;
     right: 8px;
     font-size: 12px;
@@ -663,9 +672,10 @@
     opacity: 0;
 }
 
-/* Hover Actions Overlay */
+/* Hover Actions Overlay — layer 3, above the badges it replaces on hover. */
 .gm-card-actions-overlay {
     position: absolute;
+    z-index: 3;
     bottom: 8px;
     right: 8px;
     display: flex;
@@ -1250,15 +1260,23 @@ video.gm-modal-media {
 .gm-motion-full .gm-media-grid .gm-media-card:nth-child(8)  { animation-delay: 154ms; }
 .gm-motion-full .gm-media-grid .gm-media-card:nth-child(n + 9) { animation-delay: 176ms; }
 
-/* Blur-up: the thumbnail resolves from a soft blur into focus instead of hard-popping. */
-.gm-motion-full .gm-media-element {
+/* Blur-up: the thumbnail resolves from a soft blur into focus instead of hard-popping.
+
+   The blur is applied ONLY while the image is still loading. Previously it sat on the base
+   `.gm-media-element` rule, so every image in the grid — loaded or not — carried a filter,
+   which promotes a compositor layer per image and makes Chromium defer painting off-screen
+   ones until something forces a repaint (the "only loads when I hover it" bug). */
+.gm-motion-full .gm-media-element:not(.loaded) {
     filter: blur(12px);
     transform: scale(1.03);
-    transition: opacity 0.3s ease, filter 0.45s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s ease;
+}
+
+.gm-motion-full .gm-media-element {
+    transition: opacity 0.3s ease, filter 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s ease;
 }
 
 .gm-motion-full .gm-media-element.loaded {
-    filter: blur(0);
+    filter: none;
     transform: scale(1);
 }
 
@@ -1672,6 +1690,13 @@ video.gm-modal-media {
         transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
         box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1),
         border-color 0.28s ease;
+}
+
+/* `will-change` must NOT be set on every card: each one becomes its own compositor layer, and
+   with a few hundred cards loaded that is hundreds of megabytes of GPU texture. Re-rasterising
+   them all at once (for example when the theme changes) froze the client for seconds. Promote
+   only the card actually being hovered. */
+.gm-motion-full .gm-media-card:hover {
     will-change: transform;
 }
 
@@ -1698,6 +1723,7 @@ video.gm-modal-media {
     background: linear-gradient(to top, var(--gm-scrim), transparent);
     opacity: 0;
     transition: opacity 0.28s ease;
+    /* Layer 1: over the media, under the badges. */
     z-index: 1;
 }
 
