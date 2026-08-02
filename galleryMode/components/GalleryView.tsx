@@ -344,14 +344,33 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 return `🧵 ${picked?.name || "1 thread"}`;
             }
             if (selectedThreadIds.length > 1) return `🧵 ${selectedThreadIds.length} threads in #${host}`;
+            // Nothing picked yet: the picker mode still searches everything under the host.
             return `🧵 All threads in #${host}`;
         }
         if (scope === "guild") return "Entire Server";
         // In a thread, name the thread itself — showing the parent channel here is what made it
         // look like the gallery had ignored the subthread.
         if (inThread) return `🧵 ${currentChannel?.name || "Thread"}`;
+        // A forum/media channel's media all lives in its posts, so say so rather than implying
+        // the search is limited to the channel surface itself.
+        if (isThreadParentChannel(currentChannel)) return `🧵 All sub threads in #${currentChannelName}`;
         return guildId ? `#${currentChannelName}` : currentChannelName;
     }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, inThread, scope, selectedThreadIds, siblingThreads, threadHostChannel]);
+
+    /**
+     * Label for the default ("channel") scope, describing what the search actually covers:
+     *
+     *  - inside a thread  -> just that thread
+     *  - on a forum/media channel -> every post in it, because a forum holds no messages of
+     *    its own; all of its media lives in its posts. Calling that "This Channel" read as if
+     *    it were narrower than it is.
+     *  - anywhere else -> the plain channel
+     */
+    const defaultScopeLabel = React.useMemo(() => {
+        if (inThread) return "This Thread";
+        if (isThreadParentChannel(currentChannel)) return "All Sub Threads";
+        return "This Channel";
+    }, [inThread, currentChannel]);
 
     const authorSuggestions = React.useMemo(() => {
         const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
@@ -1154,7 +1173,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     setShowChannelDropdown(false);
                                 }}
                             >
-                                {inThread ? "This Thread" : "This Channel"}
+                                {defaultScopeLabel}
                             </button>
                             {/* Only meaningful when the current channel is a thread/post, or the
                                 user is viewing a forum/media channel that contains posts. */}
@@ -1165,9 +1184,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                         setScope("parent");
                                         setShowChannelDropdown(false);
                                     }}
-                                    title={`Search every thread in #${threadHostChannel?.name || "this channel"}`}
+                                    title={`Choose which threads in #${threadHostChannel?.name || "this channel"} to search`}
                                 >
-                                    All Threads
+                                    Selected Threads
                                 </button>
                             )}
                             {!!guildId && (
@@ -1183,19 +1202,19 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     className={`gm-scope-btn gm-channel-select-btn ${selectedThreadIds.length > 0 ? "active" : ""}`}
                                     onClick={() => setShowThreadDropdown(value => !value)}
                                 >
-                                    🧵 {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} Threads` : "All Threads"} ▼
+                                    🧵 {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} Selected` : "Pick Threads"} ▼
                                 </button>
                                 {showThreadDropdown && (
                                     <div className="gm-channel-dropdown">
                                         <div className="gm-dropdown-title">
-                                            Threads in #{threadHostChannel?.name || "channel"} ({siblingThreads.length})
+                                            Sub threads in #{threadHostChannel?.name || "channel"} ({siblingThreads.length})
                                         </div>
                                         {selectedThreadIds.length > 0 && (
-                                            <button className="gm-dropdown-link" onClick={() => setSelectedThreadIds([])}>Clear selected threads</button>
+                                            <button className="gm-dropdown-link" onClick={() => setSelectedThreadIds([])}>Clear selection (search all)</button>
                                         )}
                                         {siblingThreads.length === 0 ? (
                                             <div className="gm-dropdown-empty">
-                                                No threads found in this channel yet. The search is scoped to
+                                                No sub threads found yet. The search stays scoped to
                                                 #{threadHostChannel?.name || "this channel"} in the meantime.
                                             </div>
                                         ) : siblingThreads.map((thread: any) => (
