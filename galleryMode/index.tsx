@@ -1,7 +1,7 @@
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin from "@utils/types";
 import { React, useEffect, useState } from "@webpack/common";
-import { GalleryView } from "./components/GalleryView";
+import { GalleryView, setGalleryDebug } from "./components/GalleryView";
 import { GalleryHeaderButton } from "./components/HeaderSearchBar";
 import { settings } from "./settings";
 import { startThemeToneWatcher, stopThemeToneWatcher } from "./useThemeTone";
@@ -72,6 +72,15 @@ export default definePlugin({
             }
         }
     ],
+
+    /**
+     * Toggle diagnostic logging from the console:
+     *   Vencord.Plugins.plugins.GalleryMode.debug(true)
+     *
+     * Exposed as a method because Discord removes window.localStorage from the console
+     * context, so setting the flag directly there throws.
+     */
+    debug: setGalleryDebug,
 
     // Wrapped in Vencord's ErrorBoundary to guarantee zero startup crashes
     renderHeaderButton: ErrorBoundary.wrap((props: any) => <HeaderButtonWrapper {...props} key="gallery-mode-header-btn" />, { noop: true }),

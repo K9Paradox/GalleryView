@@ -49,13 +49,38 @@ const AUTO_LOAD_COOLDOWN_MS = 700;
  *   localStorage.gmDebug = "1"
  * then reopen the gallery. Silent otherwise.
  */
+let gmDebugEnabled = false;
+
+try {
+    gmDebugEnabled = localStorage.getItem("gmDebug") === "1";
+} catch {
+    // localStorage can be unavailable in restricted contexts; tracing is never load-bearing.
+}
+
 function gmDebug(message: string, detail?: unknown) {
+    if (!gmDebugEnabled) return;
+    console.log(`[GalleryMode] ${message}`, detail ?? "");
+}
+
+/**
+ * Console switch for the tracing above:
+ *
+ *   Vencord.Plugins.plugins.GalleryMode.debug(true)
+ *
+ * Discord deletes window.localStorage from the console context to deter token-stealing scams,
+ * so a plain `localStorage.gmDebug = "1"` throws a ReferenceError there. The plugin's own reads
+ * are unaffected because they run in the app context. This toggles the in-memory flag directly
+ * and mirrors it to storage when reachable, so the setting survives a restart.
+ */
+export function setGalleryDebug(enabled: boolean): string {
+    gmDebugEnabled = enabled;
     try {
-        if (localStorage.getItem("gmDebug") !== "1") return;
-        console.log(`[GalleryMode] ${message}`, detail ?? "");
+        if (enabled) localStorage.setItem("gmDebug", "1");
+        else localStorage.removeItem("gmDebug");
     } catch {
-        // localStorage can throw in restricted contexts; tracing is never load-bearing.
+        // In-memory flag still applies for this session.
     }
+    return `[GalleryMode] debug logging ${enabled ? "enabled" : "disabled"}`;
 }
 // Extra spacing enforced between auto-loads that were NOT driven by the user actively
 // scrolling. Guards against the trigger paths (observer, scroll handler, post-load re-check,
