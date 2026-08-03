@@ -250,8 +250,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Normally the session follows the selected channel, so switching channels/threads behind
     // the overlay re-targets the gallery (deliberate). When resuming after a jump we instead
     // stay pinned to the restored session, until the user navigates again with the gallery open.
-    const [pinnedKey, setPinnedKey] = useState<string | null>(resumeKeyRef.current);
+    const [pinnedKeyState, setPinnedKeyState] = useState<string | null>(resumeKeyRef.current);
+
+    // Mirrored in a ref because handleBeforeJump must take effect *synchronously*: React may
+    // flush the SelectedChannelStore update (and therefore the session-swap effect) before a
+    // setState from the same click has been applied.
+    const pinnedKeyRef = useRef<string | null>(resumeKeyRef.current);
+    const setPinnedKey = (key: string | null) => {
+        pinnedKeyRef.current = key;
+        setPinnedKeyState(key);
+    };
+
+    const pinnedKey = pinnedKeyRef.current;
     const sessionKey = pinnedKey ?? liveSessionKey;
+    void pinnedKeyState;
     const sessionDefaults: SessionDefaults = {
         cardSize: defaultCardSize || "240px",
         // "parent" only makes sense where a thread host exists; the scope-guard effect below
@@ -318,6 +330,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const embedOffsetRef = useRef<number>(0);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
     const lastSessionKeyRef = useRef<string>(sessionKey);
+    // Set by handleBeforeJump so the navigation it causes doesn't release the pin.
+    const jumpPinnedRef = useRef<boolean>(false);
+    // Blocks further session writes once the jump snapshot has been taken.
+    const sessionSealedRef = useRef<boolean>(false);
     // Track the latest scroll top in a ref. During unmount React nulls DOM refs, so reading
     // scrollContainerRef.current there would always yield 0 and clobber the real scroll depth
     // that onScroll persisted — losing the user's position when they reopen the gallery.
@@ -554,6 +570,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     useEffect(() => {
         if (liveSessionKey === mountedLiveKeyRef.current) return;
         mountedLiveKeyRef.current = liveSessionKey;
+        // A jump deliberately navigates away; that must not clear the pin it just set.
+        if (jumpPinnedRef.current) return;
         setPinnedKey(null);
     }, [liveSessionKey]);
 
@@ -605,6 +623,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         // that setting means "don't carry state between visits", not "lose my place when I click
         // Jump", and the entry is consumed immediately on return.
         if (rememberSessions === false && !force) return;
+
+        // Once the jump snapshot is taken the session is sealed. Everything that runs during
+        // teardown (the state-change effect, the unmount cleanup) would otherwise write over it
+        // with state that React has already begun tearing down.
+        if (sessionSealedRef.current && !force) return;
         const snapshot = stateSnapshotRef.current;
 
         CacheService.saveSession(targetSessionKey, {
@@ -635,8 +658,23 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
      * re-keys the session, so a save afterwards would be filed under the destination channel.
      */
     const handleBeforeJump = React.useCallback(() => {
+        // Freeze this gallery's identity for the rest of its life.
+        //
+        // transitionTo() changes the selected channel while the overlay is still mounted, and
+        // React flushes that store update before the unmount. Without pinning, sessionKey would
+        // flip to the destination and three separate effects would fire in order:
+        //   1. the session-swap effect re-saves the old key with scrollTop 0, then hydrates the
+        //      destination channel's (empty) session over our state,
+        //   2. the state-change effect saves that emptied state,
+        //   3. the unmount cleanup saves it again.
+        // The good snapshot taken here would be overwritten before the user ever reopened.
+        // Pinning keeps sessionKey stable so all of those become no-ops against the same key.
+        jumpPinnedRef.current = true;
+        setPinnedKey(sessionKey);
+
         persistSession(sessionKey, lastScrollTopRef.current, { force: true });
         CacheService.markResumeSession(sessionKey);
+        sessionSealedRef.current = true;
     }, [persistSession, sessionKey]);
 
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
@@ -1133,6 +1171,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     useEffect(() => {
         if (lastSessionKeyRef.current === sessionKey) return;
+        // Mid-jump: the gallery is unmounting and its state is already snapshotted. Hydrating
+        // another channel's session over it here is what wiped the restore.
+        if (sessionSealedRef.current) return;
 
         persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
         isHydratingSessionRef.current = true;
