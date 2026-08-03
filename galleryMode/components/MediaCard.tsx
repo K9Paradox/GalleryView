@@ -2,7 +2,26 @@ import { openImageModal, openUserProfile } from "@utils/discord";
 import { copyToClipboard } from "@utils/clipboard";
 import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, openModal } from "@utils/modal";
 import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
+import { settings } from "../settings";
 import { MediaItem } from "../types";
+
+/**
+ * Ask Discord's media proxy for a still frame of an animated image. media.discordapp.net honours
+ * `format=webp` + `animated=false`; anything it doesn't recognise is returned unchanged, and a
+ * non-proxy URL is passed through untouched.
+ */
+function staticFrameUrl(url?: string): string | undefined {
+    if (!url) return url;
+    try {
+        const parsed = new URL(url);
+        if (parsed.hostname !== "media.discordapp.net") return url;
+        parsed.searchParams.set("format", "webp");
+        parsed.searchParams.set("animated", "false");
+        return parsed.toString();
+    } catch {
+        return url;
+    }
+}
 
 function copyWithToast(text: string, toastMsg = "Copied to clipboard!") {
     void copyToClipboard(text)
@@ -22,7 +41,9 @@ async function downloadMedia(url: string, fallbackName: string) {
         document.body.appendChild(a);
         a.click();
         a.remove();
-        URL.revokeObjectURL(objectUrl);
+        // Revoking immediately can abort the download before the browser has finished reading
+        // the blob, which showed up as silently truncated files for larger media. Defer it.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
         showToast("Downloaded media", Toasts.Type.SUCCESS);
     } catch (err) {
         console.warn("[GalleryMode] Download failed:", err);
@@ -33,6 +54,8 @@ async function downloadMedia(url: string, fallbackName: string) {
 interface MediaCardProps {
     item: MediaItem;
     onCloseGallery?: () => void;
+    /** Called immediately before navigating away, so the gallery can snapshot its state. */
+    onBeforeJump?: () => void;
 }
 
 function formatDate(isoString?: string) {
@@ -131,13 +154,95 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) => {
+function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
+    const [hovered, setHovered] = useState<boolean>(false);
+
+    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay, showAuthorFooter } =
+        settings.use([
+            "gifPlayback", "videoPlayback", "respectSpoilers",
+            "blurNsfwChannels", "showMetaOverlay", "showAuthorFooter"
+        ]);
+
+    const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
+    const [revealed, setRevealed] = useState<boolean>(false);
+    const isHidden = shouldBlur && !revealed;
+
+    const videoRef = React.useRef<HTMLVideoElement>(null);
+
+    /**
+     * Images served from Discord's CDN are frequently already in the HTTP/memory cache, in which
+     * case the browser fires `load` before React has attached onLoad. The handler then never runs,
+     * `mediaLoaded` stays false and the element is stuck at opacity 0 — an invisible card. Any
+     * repaint (such as hovering) made it appear, which is exactly the symptom.
+     *
+     * A ref callback runs synchronously on mount, so we can catch the already-complete case.
+     * `naturalWidth > 0` distinguishes a genuinely decoded image from a broken one.
+     */
+    const imgRef = React.useRef<HTMLImageElement | null>(null);
+
+    const markLoadedIfComplete = React.useCallback((img: HTMLImageElement | null) => {
+        imgRef.current = img;
+        if (img?.complete && img.naturalWidth > 0) setMediaLoaded(true);
+    }, []);
+
+    /**
+     * Safety net for the "image stays blank until I hover it" class of bug.
+     *
+     * Between `loading="lazy"`, `content-visibility: auto` and compositor layer promotion,
+     * Chromium can end up with an image that is fetched but never painted, or whose `load`
+     * event we missed. Once the card scrolls into view we explicitly poll `complete` and, if
+     * needed, call decode() — both are cheap no-ops for an image that is already fine.
+     */
+    React.useEffect(() => {
+        if (mediaLoaded || hasError) return;
+        const img = imgRef.current;
+        if (!img || typeof IntersectionObserver === "undefined") return;
+
+        const observer = new IntersectionObserver(entries => {
+            if (!entries[0]?.isIntersecting) return;
+
+            if (img.complete && img.naturalWidth > 0) {
+                setMediaLoaded(true);
+                return;
+            }
+            // decode() resolves once the bitmap is ready, covering the case where `load`
+            // fired before React attached its handler.
+            img.decode?.()
+                .then(() => setMediaLoaded(true))
+                .catch(() => { /* still loading, or genuinely broken; onError handles it */ });
+        }, { rootMargin: "200px" });
+
+        observer.observe(img);
+        return () => observer.disconnect();
+    }, [mediaLoaded, hasError, item.id]);
+
+    // Hover-driven playback. Autoplay attributes alone can't express "play on hover", and
+    // toggling the `src` would re-download the file, so we drive the element imperatively.
+    React.useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const mode = videoPlayback || "hover";
+        const shouldPlay = !isHidden && (mode === "always" || (mode === "hover" && hovered));
+
+        if (shouldPlay) {
+            void video.play().catch(() => { /* autoplay can be refused; harmless */ });
+        } else {
+            video.pause();
+            // Rewind so the next hover starts from the beginning rather than mid-clip.
+            if (mode === "hover" && !hovered) video.currentTime = 0;
+        }
+    }, [hovered, isHidden, videoPlayback]);
 
     const jumpToMessage = () => {
         if (!item.channelId || !item.messageId) return;
+        // Snapshot the gallery BEFORE navigating. transitionTo changes the selected channel,
+        // which re-keys the gallery's session to the destination — so anything saved after this
+        // point would land under the wrong key and the user's query/scope would be lost.
+        onBeforeJump?.();
         NavigationRouter.transitionTo(`/channels/${item.guildId || "@me"}/${item.channelId}/${item.messageId}`);
         onCloseGallery?.();
     };
@@ -169,6 +274,16 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
 
     const handleCardClick = () => {
         const previewUrl = firstSafeMediaUrl(item.proxyUrl, item.url);
+
+        // Drop focus from the card before handing off to Discord's image modal. The modal marks
+        // the page behind it aria-hidden; if our card still holds focus inside that subtree,
+        // Chromium logs "Blocked aria-hidden on an element because its descendant retained
+        // focus". Blurring first keeps the accessibility tree valid and silences the warning.
+        try {
+            (document.activeElement as HTMLElement | null)?.blur?.();
+        } catch {
+            // Non-fatal; the modal still opens.
+        }
 
         if ((item.type === "image" || item.type === "gif" || item.type === "embed") && previewUrl) {
             try {
@@ -209,7 +324,11 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     <Menu.MenuItem id="gm-download" label="Download Media" action={() => downloadMedia(item.url, item.filename || "media")} />
                     <Menu.MenuItem id="gm-open-browser" label="Open Original in Browser" action={() => openExternal(item.url)} />
                     <Menu.MenuItem id="gm-author-profile" label={`View @${item.author.username}'s Profile`} action={openAuthorProfile} />
-                    {item.content && (
+                    {/* MUST be a boolean guard. item.content is a string, so `item.content && ...`
+                        evaluates to "" for an empty message — and Discord's Menu API rejects
+                        string children with "Menu API only allows Items and groups of Items as
+                        children", which crashes the whole menu subtree. */}
+                    {!!item.content && (
                         <Menu.MenuItem id="gm-copy-text" label="Copy Message Text" action={() => copyWithToast(item.content!, "Copied message text!")} />
                     )}
                 </Menu.Menu>
@@ -217,18 +336,45 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
         }
     };
 
-    const displaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+    const rawDisplaySrc = firstSafeMediaUrl(item.thumbnailUrl, item.proxyUrl, item.type === "image" || item.type === "gif" ? item.url : undefined);
+
+    // GIF playback control. Discord's media proxy renders a still frame when the request asks for
+    // a non-animated format, so "static until hover/open" is a URL tweak rather than a JS pause.
+    const gifMode = gifPlayback || "always";
+    const wantsStaticGif = item.type === "gif"
+        && (gifMode === "click" || (gifMode === "hover" && !hovered) || isHidden);
+    const displaySrc = wantsStaticGif ? staticFrameUrl(rawDisplaySrc) : rawDisplaySrc;
     const videoSrc = item.type === "video" ? firstSafeMediaUrl(item.proxyUrl, item.url) : undefined;
     const typeLabel = (item.type || "file").toUpperCase();
     const avatar = avatarUrl(item);
 
+    // Reserve the final box before the bytes arrive. Discord's search payload already tells us the
+    // natural width/height of attachments and most embeds, so masonry can pin the exact aspect
+    // ratio up front instead of letting each card grow from 0px to its real height as images
+    // decode — that growth is what makes the masonry grid "spaz out" and re-trigger infinite scroll.
+    //
+    // The ratio is published as a CSS custom property rather than an inline `aspect-ratio`:
+    // inline styles outrank every stylesheet rule, so setting it directly leaked masonry's
+    // variable heights into the uniform grid layout. As a variable, each layout decides for
+    // itself whether to consume it (masonry does; grid keeps its 1:1 tiles).
+    const naturalRatio = item.width && item.height ? item.width / item.height : undefined;
+    const previewStyle = naturalRatio
+        // Clamp to the same bounds the CSS enforces (max-height: 72vh) so a 1x5000 image can't
+        // create a mile-tall column.
+        ? { "--gm-item-ratio": `${Math.min(Math.max(naturalRatio, 0.4), 3)}` } as React.CSSProperties
+        : undefined;
+
     return (
         <div
-            className="gm-media-card"
+            className={`gm-media-card${isHidden ? " gm-media-card-hidden" : ""}`}
             onClick={handleCardClick}
             onContextMenu={handleContextMenu}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
             role="button"
             tabIndex={0}
+            onFocus={() => setHovered(true)}
+            onBlur={() => setHovered(false)}
             onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
@@ -236,15 +382,34 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                 }
             }}
         >
-            <div className="gm-media-preview-wrapper">
-                <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>
+            <div
+                className="gm-media-preview-wrapper"
+                style={previewStyle}
+            >
+                {showMetaOverlay !== false && <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>}
+
+                {isHidden && (
+                    <div
+                        className="gm-spoiler-veil"
+                        onClick={(e) => {
+                            // Reveal in place; don't also open the full preview modal.
+                            e.stopPropagation();
+                            setRevealed(true);
+                        }}
+                    >
+                        <span className="gm-spoiler-label">
+                            {item.isSpoiler ? "SPOILER" : "AGE-RESTRICTED"}
+                        </span>
+                        <span className="gm-spoiler-hint">Click to reveal</span>
+                    </div>
+                )}
 
                 {item.type === "file" || item.type === "audio" ? (
                     <div className="gm-file-card-preview">
                         <div className="gm-file-ext-badge">{item.fileExtension || (item.type === "audio" ? "AUDIO" : "FILE")}</div>
                         <div className="gm-file-icon-circle">{item.type === "audio" ? "🎵" : "📄"}</div>
                         <div className="gm-file-name-text">{item.filename || "Attachment File"}</div>
-                        {item.fileSize && <div className="gm-file-size-badge">{formatSize(item.fileSize)}</div>}
+                        {!!item.fileSize && <div className="gm-file-size-badge">{formatSize(item.fileSize)}</div>}
                     </div>
                 ) : hasError ? (
                     <div className="gm-file-card-preview">
@@ -260,10 +425,12 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                             </div>
                         )}
                         <video
+                            ref={videoRef}
                             src={videoSrc}
                             poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
                             preload="metadata"
                             muted
+                            loop
                             playsInline
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
                             onLoadedMetadata={() => setMediaLoaded(true)}
@@ -291,11 +458,21 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                                 <div className="gm-spinner-icon" />
                             </div>
                         )}
+                        {/* `loading="lazy"` is back, but the two things that previously broke it
+                            are gone: the blur filter no longer sits on every image, and cards are
+                            no longer each promoted to their own compositor layer. Without lazy,
+                            opening a 600-card gallery kicks off 600 simultaneous CDN fetches,
+                            which starves the visible ones — that made the hover symptom worse,
+                            not better. */}
                         <img
+                            ref={markLoadedIfComplete}
+                            loading="lazy"
                             src={displaySrc}
                             alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
-                            loading="lazy"
+                            width={item.width}
+                            height={item.height}
+                            decoding="async"
                             onLoad={() => setMediaLoaded(true)}
                             onError={() => {
                                 setMediaLoaded(true);
@@ -305,7 +482,9 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     </>
                 )}
 
-                {item.timestamp && <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>}
+                {showMetaOverlay !== false && item.timestamp && (
+                    <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>
+                )}
 
                 <div className="gm-card-actions-overlay">
                     <button className="gm-action-btn primary" onClick={handleJumpToMessage} title="Jump to Message in Chat">Jump ➔</button>
@@ -322,6 +501,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                 </div>
             </div>
 
+            {showAuthorFooter !== false && (
             <div className="gm-card-footer" onClick={handleOpenAuthorProfile} title="View Author Profile">
                 {avatar ? (
                     <img className="gm-author-avatar" src={avatar} alt={item.author.username} />
@@ -338,8 +518,24 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onCloseGallery }) =>
                     <span className="gm-author-username">@{item.author.username}</span>
                 </div>
             </div>
+            )}
 
             {copySuccess && <div className="gm-copy-toast">Copied!</div>}
         </div>
     );
-};
+}
+
+// Memoized so gallery-level re-renders (typing in the search box, the rate-limit
+// tick, badge updates, …) don't re-render hundreds of cards that didn't change.
+// Items keep referential identity across pagination thanks to deduplicateItems().
+//
+// NOTE: the memo wrapper is created lazily on first render, not at module scope.
+// Vencord's @webpack/common exports (React included) are still undefined while
+// plugin modules are being evaluated, so calling React.memo() at the top level
+// crashes the whole Vencord bundle before it can boot.
+let MemoizedMediaCard: React.ComponentType<MediaCardProps> | null = null;
+
+export function MediaCard(props: MediaCardProps) {
+    MemoizedMediaCard ??= React.memo(MediaCardImpl);
+    return <MemoizedMediaCard {...props} />;
+}

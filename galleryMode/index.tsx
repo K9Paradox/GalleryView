@@ -1,36 +1,15 @@
-import { definePluginSettings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
-import definePlugin, { OptionType } from "@utils/types";
+import definePlugin from "@utils/types";
 import { React, useEffect, useState } from "@webpack/common";
-import { GalleryView } from "./components/GalleryView";
+import { GalleryView, setGalleryDebug } from "./components/GalleryView";
 import { GalleryHeaderButton } from "./components/HeaderSearchBar";
+import { settings } from "./settings";
+import { startThemeToneWatcher, stopThemeToneWatcher } from "./useThemeTone";
 import "./styles.css";
 
-export const settings = definePluginSettings({
-    layout: {
-        type: OptionType.SELECT,
-        description: "Gallery Layout",
-        options: [
-            { label: "Grid — uniform square tiles", value: "grid", default: true },
-            { label: "Masonry — natural image aspect ratios", value: "masonry" }
-        ]
-    },
-    defaultCardSize: {
-        type: OptionType.SELECT,
-        description: "Card Width / Grid Density",
-        options: [
-            { label: "Compact (~180px - High Density)", value: "180px" },
-            { label: "Standard (~240px - Balanced)", value: "240px", default: true },
-            { label: "Large (~320px - Expanded)", value: "320px" },
-            { label: "Showcase (~420px - High Detail)", value: "420px" }
-        ]
-    },
-    nsfw: {
-        type: OptionType.BOOLEAN,
-        description: "Include NSFW results in the gallery",
-        default: true
-    }
-});
+// Re-exported for backwards compatibility — the definition lives in ./settings.ts
+// to break the index ↔ GalleryView module cycle.
+export { settings };
 
 // Reactive state store for Gallery Mode active status
 let isGalleryActive = false;
@@ -77,8 +56,10 @@ export default definePlugin({
     searchTerms: ["gallery", "media", "images", "gifs", "videos", "search", "library"],
     authors: [
         {
-            name: "K9 & ENI",
-            id: 0n
+            name: "TheK9.",
+            // Discord user id. Set this to your own snowflake to have Vencord link the
+            // author name to your profile in the plugin list.
+            id: 153303492981686274n
         }
     ],
     settings,
@@ -94,15 +75,29 @@ export default definePlugin({
         }
     ],
 
+    /**
+     * Toggle diagnostic logging from the console:
+     *   Vencord.Plugins.plugins.GalleryMode.debug(true)
+     *
+     * Exposed as a method because Discord removes window.localStorage from the console
+     * context, so setting the flag directly there throws.
+     */
+    debug: setGalleryDebug,
+
     // Wrapped in Vencord's ErrorBoundary to guarantee zero startup crashes
     renderHeaderButton: ErrorBoundary.wrap((props: any) => <HeaderButtonWrapper {...props} key="gallery-mode-header-btn" />, { noop: true }),
 
     start() {
+        // Begin measuring Discord's theme immediately, rather than when the gallery first
+        // opens. Detecting on open meant the overlay painted with the default dark palette
+        // and then visibly snapped to the correct one.
+        startThemeToneWatcher();
         console.log("[GalleryMode] Plugin successfully initialized.");
     },
 
     stop() {
         setGalleryActive(false);
+        stopThemeToneWatcher();
         console.log("[GalleryMode] Plugin stopped.");
     }
 });

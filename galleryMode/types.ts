@@ -1,4 +1,11 @@
+// Shared type definitions for GalleryMode. Keep this file type-only —
+// no runtime code belongs here.
+
 export type MediaType = "image" | "gif" | "video" | "embed" | "file" | "audio";
+
+export type GalleryFilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
+
+export type GallerySortOrder = "asc" | "desc";
 
 export interface MediaAuthor {
     id: string;
@@ -31,6 +38,10 @@ export interface MediaItem {
     embedSiteName?: string;
     embedColor?: number;
     isVideo?: boolean;
+    /** Discord marks spoilered attachments with a SPOILER_ filename prefix. */
+    isSpoiler?: boolean;
+    /** Media that came from an age-restricted channel. */
+    isNsfwChannel?: boolean;
 }
 
 export interface SearchParameters {
@@ -38,22 +49,34 @@ export interface SearchParameters {
     guildId?: string;
     channelIds?: string[];
     query?: string;
-    filterType?: "all" | "image" | "video" | "embed" | "file" | "audio";
+    filterType?: GalleryFilterType;
+    /**
+     * Multi-select media types. When present (and containing more than one entry) this takes
+     * precedence over filterType: the union of the requested types is fetched and then filtered
+     * client-side. A single entry behaves exactly like filterType.
+     */
+    filterTypes?: GalleryFilterType[];
     beforeDate?: string;
     afterDate?: string;
     hasImage?: boolean;
     hasVideo?: boolean;
     hasEmbed?: boolean;
     offset?: number;
+    /** Separate cursor for the embed stream blended into the "all" filter (see SearchService). */
+    embedOffset?: number;
     limit?: number;
     authorId?: string;
     authorIds?: string[];
     mentions?: string;
     nsfw?: boolean;
+    /** Result ordering by message timestamp. Defaults to "desc" (newest first). */
+    sortOrder?: GallerySortOrder;
 }
 
 export interface DiscordAttachment {
     id: string;
+    /** Bit 1<<3 marks the attachment as a spoiler in newer payloads. */
+    flags?: number;
     filename: string;
     size: number;
     url: string;
@@ -61,6 +84,13 @@ export interface DiscordAttachment {
     height?: number;
     width?: number;
     content_type?: string;
+}
+
+export interface DiscordEmbedMedia {
+    url: string;
+    proxy_url?: string;
+    height?: number;
+    width?: number;
 }
 
 export interface DiscordEmbed {
@@ -79,24 +109,9 @@ export interface DiscordEmbed {
         url?: string;
         icon_url?: string;
     };
-    thumbnail?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
-    image?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
-    video?: {
-        url: string;
-        proxy_url?: string;
-        height?: number;
-        width?: number;
-    };
+    thumbnail?: DiscordEmbedMedia;
+    image?: DiscordEmbedMedia;
+    video?: DiscordEmbedMedia;
 }
 
 export interface DiscordUser {
@@ -124,6 +139,8 @@ export interface DiscordSearchResponse {
     total_results: number;
     messages: DiscordMessage[][];
     analytics_id?: string;
+    /** Present instead of results while the search index warms up. */
+    retry_after?: number;
 }
 
 export interface SearchCacheEntry {
@@ -132,6 +149,7 @@ export interface SearchCacheEntry {
     totalResults: number;
     hasMore: boolean;
     nextOffset: number;
+    nextEmbedOffset?: number;
 }
 
 export interface RateLimitState {

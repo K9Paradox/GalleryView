@@ -1,4 +1,4 @@
-import { RestAPI } from "@webpack/common";
+import { ChannelStore, RestAPI } from "@webpack/common";
 import {
     DiscordEmbed,
     DiscordMessage,
@@ -10,14 +10,29 @@ import {
 } from "../types";
 import { CacheService } from "./cacheService";
 
-type SearchResult = { items: MediaItem[]; totalResults: number; hasMore: boolean; nextOffset: number };
+type SearchResult = {
+    items: MediaItem[];
+    totalResults: number;
+    hasMore: boolean;
+    nextOffset: number;
+    /** Cursor for the embed stream that "all" blends in — tracked separately from nextOffset. */
+    nextEmbedOffset?: number;
+};
 type DiscordSearchHasType = "image" | "video" | "sound" | "file" | "embed";
 
 export class SearchService {
     private static requestQueue: Array<() => Promise<void>> = [];
     private static isProcessingQueue = false;
     private static lastRequestTimestamp = 0;
-    private static readonly MIN_REQUEST_INTERVAL_MS = 350;
+    private static readonly BASE_REQUEST_INTERVAL_MS = 350;
+    private static readonly MAX_REQUEST_INTERVAL_MS = 2500;
+    /**
+     * Adaptive spacing between search requests. Starts at BASE, doubles every time Discord
+     * throttles us, and decays back down after a run of clean responses. This keeps normal
+     * browsing fast while stopping the gallery from repeatedly walking into the same 429.
+     */
+    private static requestIntervalMs = 350;
+    private static cleanResponseStreak = 0;
     private static readonly MAX_RETRIES = 3;
 
     private static rateLimitState: RateLimitState = {
@@ -27,6 +42,102 @@ export class SearchService {
     };
 
     private static inFlightRequests = new Map<string, Promise<SearchResult>>();
+
+    /**
+     * Negative cache: search targets that returned zero results for a given `has:` stream.
+     * Lets us skip requests that are guaranteed to come back empty (e.g. the embed blend in a
+     * channel that has never had a link embed). Cleared when the plugin/gallery is reset.
+     */
+    private static emptyStreams = new Set<string>();
+
+    /**
+     * Raw HTTP response cache, keyed by endpoint + serialized query. Distinct gallery filters
+     * frequently produce byte-identical Discord requests (e.g. ALL and FILE both send `has=file`),
+     * so this collapses them into a single network round-trip. Short TTL keeps results fresh.
+     */
+    private static rawResponseCache = new Map<string, { timestamp: number; data: DiscordSearchResponse; }>();
+    private static inFlightRaw = new Map<string, Promise<DiscordSearchResponse>>();
+    private static readonly RAW_CACHE_TTL_MS = 60 * 1000;
+    private static readonly MAX_RAW_CACHE_ENTRIES = 60;
+
+    /**
+     * Warm the cache for a page the user hasn't asked for yet. Identical to searchMedia() except
+     * that failures are swallowed — a prefetch must never surface an error or a spinner. The
+     * result lands in CacheService, so the eventual real call resolves synchronously.
+     */
+    public static prefetchMedia(params: SearchParameters): void {
+        if (this.getRateLimitState().isRateLimited) return;
+        // Back off speculative work whenever Discord has recently throttled us. requestIntervalMs
+        // only rises above the base value after a 429, so this stops the prefetch from adding a
+        // third request per page at exactly the moment we're already over budget.
+        if (this.requestIntervalMs > this.BASE_REQUEST_INTERVAL_MS) return;
+        if (CacheService.get(params)) return;
+        if (this.inFlightRequests.has(CacheService.getCacheKey(params))) return;
+
+        void this.searchMedia(params).catch(() => {
+            // Intentionally silent: a failed prefetch just means the real request pays full price.
+        });
+    }
+
+    /**
+     * List threads under a channel, including ones the user has never opened.
+     *
+     * The client store only holds *active joined* threads, so a picker built from it shows
+     * almost nothing in a busy forum. Discord exposes the full set over REST:
+     *   - /channels/:id/threads/search covers active + archived for forum/media channels
+     *   - /channels/:id/threads/archived/public is the fallback for text channels
+     * Results are cached for the session; failures degrade to whatever the store knows.
+     */
+    private static threadListCache = new Map<string, { timestamp: number; threads: any[]; }>();
+    private static readonly THREAD_CACHE_TTL_MS = 2 * 60 * 1000;
+
+    public static async listThreads(channelId: string): Promise<any[]> {
+        const cached = this.threadListCache.get(channelId);
+        if (cached && Date.now() - cached.timestamp <= this.THREAD_CACHE_TTL_MS) return cached.threads;
+
+        const collected = new Map<string, any>();
+        const absorb = (list: any) => {
+            for (const thread of Array.isArray(list) ? list : []) {
+                if (thread?.id) collected.set(thread.id, thread);
+            }
+        };
+
+        // Forum/media channels: the thread *search* endpoint returns active and archived posts.
+        try {
+            await this.enforceRequestSpacing();
+            const response: any = await RestAPI.get({
+                url: `/channels/${channelId}/threads/search`,
+                query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 25 },
+                oldFormErrors: true
+            });
+            absorb((response?.body ?? response)?.threads);
+        } catch {
+            // Not a forum, or no permission — the archived endpoint below may still work.
+        }
+
+        // Text/announcement channels: public archived threads.
+        try {
+            await this.enforceRequestSpacing();
+            const response: any = await RestAPI.get({
+                url: `/channels/${channelId}/threads/archived/public`,
+                query: { limit: 25 },
+                oldFormErrors: true
+            });
+            absorb((response?.body ?? response)?.threads);
+        } catch {
+            // Fine — fall back to whatever the client store knows.
+        }
+
+        const threads = [...collected.values()];
+        this.threadListCache.set(channelId, { timestamp: Date.now(), threads });
+        return threads;
+    }
+
+    public static resetNegativeCache(): void {
+        this.threadListCache.clear();
+        this.emptyStreams.clear();
+        this.rawResponseCache.clear();
+    }
 
     public static getRateLimitState(): RateLimitState {
         if (this.rateLimitState.isRateLimited && Date.now() >= this.rateLimitState.resetTimestamp) {
@@ -45,7 +156,8 @@ export class SearchService {
                 items: cached.items,
                 totalResults: cached.totalResults,
                 hasMore: cached.hasMore,
-                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length)
+                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length),
+                nextEmbedOffset: cached.nextEmbedOffset
             };
         }
 
@@ -56,7 +168,7 @@ export class SearchService {
             this.enqueueRequest(async () => {
                 try {
                     const result = await this.executeSearchRequest(params);
-                    CacheService.set(params, result.items, result.totalResults, result.hasMore, result.nextOffset);
+                    CacheService.set(params, result.items, result.totalResults, result.hasMore, result.nextOffset, result.nextEmbedOffset);
                     resolve(result);
                 } catch (err) {
                     reject(err);
@@ -88,8 +200,8 @@ export class SearchService {
                 }
 
                 const timeSinceLast = Date.now() - this.lastRequestTimestamp;
-                if (timeSinceLast < this.MIN_REQUEST_INTERVAL_MS) {
-                    await this.sleep(this.MIN_REQUEST_INTERVAL_MS - timeSinceLast);
+                if (timeSinceLast < this.requestIntervalMs) {
+                    await this.sleep(this.requestIntervalMs - timeSinceLast);
                 }
 
                 const task = this.requestQueue.shift();
@@ -104,28 +216,76 @@ export class SearchService {
     }
 
     private static async executeSearchRequest(params: SearchParameters): Promise<SearchResult> {
-        const primary = await this.executeSingleSearchRequest(params, this.resolveHasType(params.filterType));
+        // A multi-type selection cannot be expressed in a single Discord `has:` parameter, so we
+        // fetch the same broad streams as ALL (attachments + embeds) and narrow the results
+        // client-side via matchesRequestedType. Request cost is identical to ALL.
+        const isMultiSelect = (params.filterTypes?.length ?? 0) > 1;
+        const isAll = isMultiSelect || (params.filterType ?? "all") === "all";
 
         // "All" should feel like a real gallery, not just attachments. Discord search only accepts
-        // one has: type per request, so cheaply blend in rich embeds from the same page.
-        if ((params.filterType ?? "all") === "all") {
+        // one has: type per request, so we run two streams (attachments + embeds) and blend them.
+        //
+        // Each stream keeps its OWN cursor. Previously both used params.offset, so as soon as one
+        // stream ran out the other kept re-requesting an already-consumed page — burning a request
+        // per "Load More" that could never return anything new. embedOffset < 0 marks the embed
+        // stream as exhausted, which skips the second HTTP request entirely from then on.
+        const embedOffset = params.embedOffset ?? params.offset ?? 0;
+        const embedExhausted = isAll && embedOffset < 0;
+
+        const attachmentTarget = this.searchTargetKey(params);
+        const skipEmbedStream = embedExhausted || this.emptyStreams.has(`${attachmentTarget}|embed`);
+
+        const primary = await this.executeSingleSearchRequest(
+            params,
+            isMultiSelect ? "file" : this.resolveHasType(params.filterType)
+        );
+
+        if (isAll && !skipEmbedStream) {
             try {
                 await this.enforceRequestSpacing();
-                const embeds = await this.executeSingleSearchRequest({ ...params, filterType: "all" }, "embed");
+                const embeds = await this.executeSingleSearchRequest(
+                    // Keep filterTypes so the embed page is narrowed client-side the same way.
+                    { ...params, filterType: isMultiSelect ? params.filterType : "all", offset: embedOffset },
+                    "embed"
+                );
                 const items = CacheService.deduplicateItems(primary.items, embeds.items);
+
+                // Remember channel/guild+filter combinations that have zero embed results at all,
+                // so subsequent pages in this session don't pay for a guaranteed-empty request.
+                if (embedOffset === 0 && embeds.totalResults === 0) {
+                    this.emptyStreams.add(`${attachmentTarget}|embed`);
+                }
+
                 return {
                     items,
                     totalResults: Math.max(primary.totalResults, embeds.totalResults, items.length),
                     hasMore: primary.hasMore || embeds.hasMore,
-                    // Pagination is driven by the primary (attachment) page's hit count.
-                    nextOffset: primary.nextOffset
+                    nextOffset: primary.nextOffset,
+                    nextEmbedOffset: embeds.hasMore ? embeds.nextOffset : -1
                 };
             } catch (err) {
                 console.warn("[GalleryMode] Failed to include embed results in all-media query; continuing with attachments only.", err);
             }
         }
 
-        return primary;
+        return isAll ? { ...primary, nextEmbedOffset: skipEmbedStream ? -1 : primary.nextEmbedOffset } : primary;
+    }
+
+    /** Identity of the thing being searched, ignoring pagination — used for negative caching. */
+    private static searchTargetKey(params: SearchParameters): string {
+        const target = params.guildId ? `g:${params.guildId}` : `c:${params.channelId ?? ""}`;
+        const channels = params.channelIds?.length ? [...params.channelIds].sort().join(",") : "";
+        const authors = params.authorIds?.length ? [...params.authorIds].sort().join(",") : (params.authorId ?? "");
+        return [
+            target,
+            channels,
+            authors,
+            (params.query ?? "").trim().toLowerCase(),
+            params.beforeDate ?? "",
+            params.afterDate ?? "",
+            params.nsfw === false ? "0" : "1",
+            params.filterTypes?.length ? [...params.filterTypes].sort().join("+") : (params.filterType ?? "all")
+        ].join("|");
     }
 
     private static async executeSingleSearchRequest(
@@ -168,6 +328,18 @@ export class SearchService {
             queryParams.content = params.query.trim();
         }
 
+        // Date range filters: the search API only understands snowflake boundaries, so convert
+        // the YYYY-MM-DD values from the date pickers into min/max message ids (local time).
+        const minId = params.afterDate ? this.dateToSnowflake(params.afterDate, false) : undefined;
+        if (minId) queryParams.min_id = minId;
+        const maxId = params.beforeDate ? this.dateToSnowflake(params.beforeDate, true) : undefined;
+        if (maxId) queryParams.max_id = maxId;
+
+        if (params.sortOrder) {
+            queryParams.sort_by = "timestamp";
+            queryParams.sort_order = params.sortOrder;
+        }
+
         const responseData = await this.requestDiscordSearch(endpoint, queryParams);
         return this.transformSearchResponse(responseData, params);
     }
@@ -176,6 +348,40 @@ export class SearchService {
         endpoint: string,
         queryParams: Record<string, any>,
         attempt = 0
+    ): Promise<DiscordSearchResponse> {
+        if (attempt === 0) {
+            const rawKey = `${endpoint}?${JSON.stringify(Object.entries(queryParams).sort())}`;
+
+            const cached = this.rawResponseCache.get(rawKey);
+            if (cached && Date.now() - cached.timestamp <= this.RAW_CACHE_TTL_MS) return cached.data;
+            if (cached) this.rawResponseCache.delete(rawKey);
+
+            // Collapse concurrent identical requests (two filters resolving the same has: type).
+            const pending = this.inFlightRaw.get(rawKey);
+            if (pending) return pending;
+
+            const promise = this.performDiscordSearch(endpoint, queryParams, attempt)
+                .then(data => {
+                    if (this.rawResponseCache.size >= this.MAX_RAW_CACHE_ENTRIES) {
+                        const oldest = this.rawResponseCache.keys().next().value;
+                        if (oldest !== undefined) this.rawResponseCache.delete(oldest);
+                    }
+                    this.rawResponseCache.set(rawKey, { timestamp: Date.now(), data });
+                    return data;
+                })
+                .finally(() => this.inFlightRaw.delete(rawKey));
+
+            this.inFlightRaw.set(rawKey, promise);
+            return promise;
+        }
+
+        return this.performDiscordSearch(endpoint, queryParams, attempt);
+    }
+
+    private static async performDiscordSearch(
+        endpoint: string,
+        queryParams: Record<string, any>,
+        attempt: number
     ): Promise<DiscordSearchResponse> {
         try {
             const response: any = await RestAPI.get({
@@ -190,6 +396,7 @@ export class SearchService {
             // Treat it as a transient loading state instead of surfacing a permanent error.
             if (responseData?.retry_after && !responseData?.messages && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(responseData.retry_after);
+                this.onThrottled();
                 this.rateLimitState = {
                     isRateLimited: true,
                     retryAfterMs: retryMs,
@@ -200,11 +407,13 @@ export class SearchService {
                 return this.requestDiscordSearch(endpoint, queryParams, attempt + 1);
             }
 
+            this.onCleanResponse();
             return responseData as DiscordSearchResponse;
         } catch (err: any) {
             const retryAfter = err?.body?.retry_after ?? err?.retry_after;
             if ((err?.status === 429 || retryAfter) && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(retryAfter || 3);
+                this.onThrottled();
                 this.rateLimitState = {
                     isRateLimited: true,
                     retryAfterMs: retryMs,
@@ -234,6 +443,14 @@ export class SearchService {
             if (!msg?.id || seenMessageIds.has(msg.id)) continue;
             seenMessageIds.add(msg.id);
 
+            // Age-restricted source channel — used to optionally blur previews.
+            let isNsfwChannel = false;
+            try {
+                isNsfwChannel = !!ChannelStore?.getChannel(msg.channel_id)?.nsfw;
+            } catch {
+                // Channel not cached; treat as safe rather than blurring everything.
+            }
+
             if (params.channelId && (!params.channelIds || params.channelIds.length === 0) && msg.channel_id !== params.channelId) {
                 continue;
             }
@@ -241,9 +458,12 @@ export class SearchService {
             if (msg.attachments?.length) {
                 for (const att of msg.attachments) {
                     const detectedType = this.categorizeAttachment(att.filename, att.content_type);
-                    if (!this.matchesRequestedType(detectedType, params.filterType)) continue;
+                    if (!this.matchesRequestedType(detectedType, params)) continue;
 
                     const ext = att.filename.includes(".") ? att.filename.split(".").pop()?.toUpperCase() : "FILE";
+                    // Discord flags spoilered attachments with a SPOILER_ filename prefix, and
+                    // newer payloads additionally set bit 1<<3 on attachment.flags.
+                    const isSpoiler = att.filename.startsWith("SPOILER_") || !!((att.flags ?? 0) & 8);
 
                     extractedItems.push({
                         id: `att_${att.id}`,
@@ -261,6 +481,8 @@ export class SearchService {
                         height: att.height,
                         timestamp: msg.timestamp,
                         content: msg.content,
+                        isSpoiler,
+                        isNsfwChannel,
                         author: this.transformAuthor(msg)
                     });
                 }
@@ -270,7 +492,7 @@ export class SearchService {
                 for (let index = 0; index < msg.embeds.length; index++) {
                     const embed = msg.embeds[index];
                     const detectedType = this.categorizeEmbed(embed);
-                    if (!detectedType || !this.matchesRequestedType(detectedType, params.filterType)) continue;
+                    if (!detectedType || !this.matchesRequestedType(detectedType, params)) continue;
 
                     const rawMediaUrl = embed.image?.url || embed.video?.url || embed.thumbnail?.url || embed.url;
                     if (!rawMediaUrl) continue;
@@ -297,6 +519,9 @@ export class SearchService {
                         embedDescription: embed.description,
                         embedSiteName: embed.provider?.name,
                         embedColor: embed.color,
+                        // A link wrapped in || || spoils the embed it generates.
+                        isSpoiler: /\|\|.*?\|\|/s.test(msg.content || ""),
+                        isNsfwChannel,
                         author: this.transformAuthor(msg)
                     });
                 }
@@ -331,12 +556,15 @@ export class SearchService {
         };
     }
 
-    private static matchesRequestedType(type: MediaType, filterType: SearchParameters["filterType"]): boolean {
-        const filter = filterType || "all";
-        if (filter === "all") return true;
-        if (filter === "image") return type === "image" || type === "gif";
-        if (filter === "file") return type === "file";
-        return type === filter;
+    private static matchesRequestedType(type: MediaType, params: SearchParameters): boolean {
+        const selected = params.filterTypes?.length ? params.filterTypes : [params.filterType || "all"];
+        return selected.some(filter => {
+            if (filter === "all") return true;
+            // "image" covers static images and GIFs, matching the IMAGE tab's label.
+            if (filter === "image") return type === "image" || type === "gif";
+            if (filter === "file") return type === "file";
+            return type === filter;
+        });
     }
 
     private static resolveHasType(filterType: SearchParameters["filterType"]): DiscordSearchHasType {
@@ -414,16 +642,48 @@ export class SearchService {
 
     private static async enforceRequestSpacing(): Promise<void> {
         const timeSinceLast = Date.now() - this.lastRequestTimestamp;
-        if (timeSinceLast < this.MIN_REQUEST_INTERVAL_MS) {
-            await this.sleep(this.MIN_REQUEST_INTERVAL_MS - timeSinceLast);
+        if (timeSinceLast < this.requestIntervalMs) {
+            await this.sleep(this.requestIntervalMs - timeSinceLast);
         }
         this.lastRequestTimestamp = Date.now();
+    }
+
+    private static onThrottled(): void {
+        this.cleanResponseStreak = 0;
+        this.requestIntervalMs = Math.min(this.MAX_REQUEST_INTERVAL_MS, Math.round(this.requestIntervalMs * 2));
+    }
+
+    private static onCleanResponse(): void {
+        if (this.requestIntervalMs <= this.BASE_REQUEST_INTERVAL_MS) return;
+        if (++this.cleanResponseStreak < 5) return;
+        this.cleanResponseStreak = 0;
+        this.requestIntervalMs = Math.max(this.BASE_REQUEST_INTERVAL_MS, Math.round(this.requestIntervalMs / 2));
     }
 
     private static normaliseRetryAfter(retryAfter: number): number {
         const retry = Number(retryAfter) || 3;
         // Discord sometimes returns seconds and sometimes milliseconds depending on the code path.
         return retry > 100 ? retry : retry * 1000;
+    }
+
+    // Discord snowflakes encode ms-since-the-Discord-epoch in their high bits.
+    private static readonly DISCORD_EPOCH_MS = 1420070400000n;
+
+    private static dateToSnowflake(date: string, endOfDay: boolean): string | undefined {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date.trim());
+        if (!match) return undefined;
+
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        if (!year || !month || !day) return undefined;
+
+        const ms = endOfDay
+            ? new Date(year, month - 1, day, 23, 59, 59, 999).getTime()
+            : new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+        if (!Number.isFinite(ms)) return undefined;
+
+        return ((BigInt(ms) - this.DISCORD_EPOCH_MS) << 22n).toString();
     }
 
     private static sleep(ms: number): Promise<void> {
