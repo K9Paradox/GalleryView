@@ -34,6 +34,9 @@ export class CacheService {
     // times thousands of items is real memory. Restoring the first few pages is enough to feel
     // instant; anything beyond that is re-fetched on scroll (and usually still cached).
     private static MAX_SESSION_ITEMS = 300;
+    // Hard ceiling applied even to a session the user has scrolled into, so memory still cannot
+    // grow without bound during a very long browse.
+    private static MAX_SESSION_ITEMS_HARD = 1200;
 
     /**
      * Generate a deterministic, fully unique cache key from search parameters
@@ -139,14 +142,36 @@ export class CacheService {
     public static saveSession(sessionKey: string, state: GallerySessionState): void {
         let trimmed = state;
 
-        if (state.mediaItems.length > this.MAX_SESSION_ITEMS) {
+        // Only trim when the user is near the top. Discarding the tail of a list they have
+        // scrolled deep into would strand them: the retained slice cannot reach their saved
+        // position, so the restore lands somewhere else entirely.
+        //
+        // This previously trimmed unconditionally and zeroed scrollTop, which silently threw
+        // away the scroll position whenever the last save happened to hold more than
+        // MAX_SESSION_ITEMS. Whether that occurred depended on where the user was in the
+        // paging cycle, which is exactly why the "reset to top" looked random.
+        const overCap = state.mediaItems.length > this.MAX_SESSION_ITEMS;
+        const scrolledIntoTail = state.scrollTop > 0;
+
+        if (overCap && !scrolledIntoTail) {
             // Truncating the items alone would leave `offset` pointing past the end, so the next
-            // "Load More" after a restore would skip everything in between. Reset the cursor and
-            // scroll position to match the retained slice, and mark it as having more to fetch.
+            // "Load More" after a restore would skip everything in between. Reset the cursor to
+            // match the retained slice and mark it as having more to fetch.
             trimmed = {
                 ...state,
                 mediaItems: state.mediaItems.slice(0, this.MAX_SESSION_ITEMS),
                 offset: this.MAX_SESSION_ITEMS,
+                hasMore: true,
+                scrollTop: 0
+            };
+        } else if (overCap && state.mediaItems.length > this.MAX_SESSION_ITEMS_HARD) {
+            // Absolute ceiling so a very long browse still cannot grow without bound. Keep the
+            // most recent items (the ones nearest the user's position) rather than the oldest,
+            // and drop the scroll position honestly instead of pretending it still applies.
+            trimmed = {
+                ...state,
+                mediaItems: state.mediaItems.slice(0, this.MAX_SESSION_ITEMS_HARD),
+                offset: this.MAX_SESSION_ITEMS_HARD,
                 hasMore: true,
                 scrollTop: 0
             };

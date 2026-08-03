@@ -1273,6 +1273,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         let frame = 0;
         let attempts = 0;
         let cancelled = false;
+        let lastHeightRef = -1;
 
         const apply = () => {
             if (cancelled) return;
@@ -1284,8 +1285,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             lastScrollTopRef.current = container.scrollTop;
 
             const settled = Math.abs(container.scrollTop - target) <= 1;
+            // A trimmed session holds fewer items than when it was saved, so its content can be
+            // genuinely shorter than the saved offset. Once the container has stopped growing,
+            // accept the furthest reachable position instead of retrying for the full 2s.
+            const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 1;
+            const stalled = atBottom && container.scrollHeight === lastHeightRef;
+            lastHeightRef = container.scrollHeight;
+
             // Give the layout up to ~2s to grow; images and the masonry packer need a moment.
-            if (settled || ++attempts > 120) {
+            if (settled || (stalled && attempts > 20) || ++attempts > 120) {
                 gmDebug("scroll restore finished", {
                     target,
                     reached: container.scrollTop,
