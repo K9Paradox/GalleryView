@@ -256,6 +256,6 @@ Theming goes through `--gm-*` custom properties defined at the top of `styles.cs
 
 ## 📄 Credits
 
-Built by **TheK9.**
+Directed by **TheK9.** Built by anon agent
 
 Not affiliated with Discord or Vencord. Discord is a trademark of Discord Inc.
