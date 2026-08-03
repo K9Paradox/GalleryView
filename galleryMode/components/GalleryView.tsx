@@ -43,6 +43,20 @@ const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
+
+/**
+ * Opt-in tracing for session restore / refetch decisions. Enable from the console with:
+ *   localStorage.gmDebug = "1"
+ * then reopen the gallery. Silent otherwise.
+ */
+function gmDebug(message: string, detail?: unknown) {
+    try {
+        if (localStorage.getItem("gmDebug") !== "1") return;
+        console.log(`[GalleryMode] ${message}`, detail ?? "");
+    } catch {
+        // localStorage can throw in restricted contexts; tracing is never load-bearing.
+    }
+}
 // Extra spacing enforced between auto-loads that were NOT driven by the user actively
 // scrolling. Guards against the trigger paths (observer, scroll handler, post-load re-check,
 // deferred retry) re-arming each other into a free-running pagination loop.
@@ -244,7 +258,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const resumeKeyRef = useRef<string | null | undefined>(undefined);
     if (resumeKeyRef.current === undefined) {
         const pending = CacheService.takeResumeSession();
-        resumeKeyRef.current = pending && CacheService.getSession(pending) ? pending : null;
+        const restored = pending ? CacheService.getSession(pending) : null;
+        resumeKeyRef.current = pending && restored ? pending : null;
+        gmDebug("resume check", {
+            pending,
+            found: !!restored,
+            items: restored?.mediaItems?.length ?? 0,
+            query: restored?.activeQuery ?? ""
+        });
     }
 
     // Normally the session follows the selected channel, so switching channels/threads behind
@@ -517,6 +538,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         if (selectedChannelIds.length === 0 || availableGuildChannelIds.size === 0) return selectedChannelIds;
         return selectedChannelIds.filter(id => availableGuildChannelIds.has(id));
     }, [selectedChannelIds, availableGuildChannelIds]);
+
+    // Content-based keys for the array inputs the auto-fetch effect depends on. Comparing these
+    // strings instead of array identity means the effect only re-runs when the *values* change.
+    const selectedChannelIdsKey = effectiveSelectedChannelIds.join(",");
+    const selectedThreadIdsKey = selectedThreadIds.join(",");
+    const selectedTypesKey = selectedTypes.join(",");
+    const selectedAuthorsKey = selectedAuthors.map(author => author.id).join(",");
+    // Only the "all sub threads" scope searches this list, so a late-arriving thread fetch must
+    // not reset the gallery in any other scope.
+    const threadChannelIdsKey = scope === "parent" ? threadChannelIds.join(",") : "";
 
     const channelPillLabel = React.useMemo(() => {
         const currentChannelName = currentChannel?.name
@@ -1233,11 +1264,39 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return () => persistSession(keyAtRegistration, lastScrollTopRef.current);
     }, [persistSession]);
 
+    // Signature of everything that genuinely defines "which search is this". A reset is only
+    // correct when this actually changes; comparing it explicitly is far more robust than
+    // relying on a one-shot flag, which any stray dependency change could burn through.
+    const searchSignature = [
+        channelId ?? "", guildId ?? "", scope, filterType, activeQuery,
+        beforeDate, afterDate, sortOrder, String(nsfw),
+        selectedChannelIdsKey, selectedThreadIdsKey, selectedTypesKey,
+        selectedAuthorsKey, threadChannelIdsKey
+    ].join("|");
+
+    const lastSearchSignatureRef = useRef<string>(searchSignature);
+
     useEffect(() => {
         if (skipAutoFetchRef.current) {
             skipAutoFetchRef.current = false;
+            lastSearchSignatureRef.current = searchSignature;
+            gmDebug("auto-fetch skipped (restored session)", { sessionKey, items: mediaItemsRef.current.length });
             return;
         }
+
+        // Guard against re-entry from an unrelated re-render: if nothing that defines the
+        // search actually changed, never throw away results we already have.
+        if (searchSignature === lastSearchSignatureRef.current && mediaItemsRef.current.length > 0) {
+            gmDebug("auto-fetch suppressed (signature unchanged)", { sessionKey });
+            return;
+        }
+
+        gmDebug("auto-fetch RESET", {
+            sessionKey,
+            from: lastSearchSignatureRef.current,
+            to: searchSignature
+        });
+        lastSearchSignatureRef.current = searchSignature;
 
         latestRequestRef.current++;
         fetchingRef.current = false;
@@ -1249,7 +1308,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         setHasMore(true);
         setTotalResults(0);
         void fetchMedia(0, filterType, activeQuery, true);
-    }, [activeQuery, afterDate, beforeDate, channelId, effectiveSelectedChannelIds, filterType, guildId, nsfw, scope, selectedAuthors, selectedThreadIds, selectedTypes, sortOrder, threadChannelIds]);
+        // Depends on the content signature only. Listing the array values directly made this
+        // effect re-run whenever a render produced a new array with identical contents — and
+        // threadChannelIds is filled by an async REST call ~200ms after mount, which fired a
+        // full reset that wiped the session we had just restored.
+    }, [searchSignature]);
 
     // After a page settles, the sentinel may still be on screen (short page, fast scroll, or a
     // filtered-down result set). The observer won't re-fire because intersection didn't change,
