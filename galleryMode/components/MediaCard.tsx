@@ -54,6 +54,8 @@ async function downloadMedia(url: string, fallbackName: string) {
 interface MediaCardProps {
     item: MediaItem;
     onCloseGallery?: () => void;
+    /** Called immediately before navigating away, so the gallery can snapshot its state. */
+    onBeforeJump?: () => void;
 }
 
 function formatDate(isoString?: string) {
@@ -152,7 +154,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
+function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
@@ -237,6 +239,10 @@ function MediaCardImpl({ item, onCloseGallery }: MediaCardProps) {
 
     const jumpToMessage = () => {
         if (!item.channelId || !item.messageId) return;
+        // Snapshot the gallery BEFORE navigating. transitionTo changes the selected channel,
+        // which re-keys the gallery's session to the destination — so anything saved after this
+        // point would land under the wrong key and the user's query/scope would be lost.
+        onBeforeJump?.();
         NavigationRouter.transitionTo(`/channels/${item.guildId || "@me"}/${item.channelId}/${item.messageId}`);
         onCloseGallery?.();
     };

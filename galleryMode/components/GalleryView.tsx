@@ -236,7 +236,22 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // the user is looking at the forum channel rather than an individual post.
     const threadHostChannel = threadParentChannel ?? (isThreadParentChannel(currentChannel) ? currentChannel : null);
     const threadHostId: string | undefined = threadHostChannel?.id;
-    const sessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
+    const liveSessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
+
+    // If the gallery was closed by "jump to message", resume that session instead of the one
+    // belonging to the channel we just landed in. Captured once on mount: it must not change
+    // as the user navigates while the gallery is open.
+    const resumeKeyRef = useRef<string | null | undefined>(undefined);
+    if (resumeKeyRef.current === undefined) {
+        const pending = CacheService.takeResumeSession();
+        resumeKeyRef.current = pending && CacheService.getSession(pending) ? pending : null;
+    }
+
+    // Normally the session follows the selected channel, so switching channels/threads behind
+    // the overlay re-targets the gallery (deliberate). When resuming after a jump we instead
+    // stay pinned to the restored session, until the user navigates again with the gallery open.
+    const [pinnedKey, setPinnedKey] = useState<string | null>(resumeKeyRef.current);
+    const sessionKey = pinnedKey ?? liveSessionKey;
     const sessionDefaults: SessionDefaults = {
         cardSize: defaultCardSize || "240px",
         // "parent" only makes sense where a thread host exists; the scope-guard effect below
@@ -248,7 +263,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     // `rememberSessions` off means always start from the configured defaults.
     const initialSession = mergeSessionState(
-        rememberSessions === false ? null : CacheService.getSession(sessionKey),
+        // A resumed session is always restored, even with rememberSessions off — see persistSession.
+        rememberSessions === false && !resumeKeyRef.current ? null : CacheService.getSession(sessionKey),
         initialQuery,
         sessionDefaults
     );
@@ -532,6 +548,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return "This Channel";
     }, [inThread, currentChannel]);
 
+    // Drop the resume pin as soon as the user navigates somewhere new with the gallery open;
+    // from then on the gallery tracks the selected channel again, as it does normally.
+    const mountedLiveKeyRef = useRef<string>(liveSessionKey);
+    useEffect(() => {
+        if (liveSessionKey === mountedLiveKeyRef.current) return;
+        mountedLiveKeyRef.current = liveSessionKey;
+        setPinnedKey(null);
+    }, [liveSessionKey]);
+
     const authorSuggestions = React.useMemo(() => {
         const q = debouncedAuthorQuery.trim().replace(/^@/, "").toLowerCase();
         if (!q || !UserStore) return [];
@@ -570,10 +595,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return () => clearTimeout(t);
     }, [authorQuery]);
 
-    const persistSession = React.useCallback((targetSessionKey = sessionKey, scrollTop = lastScrollTopRef.current) => {
+    const persistSession = React.useCallback((
+        targetSessionKey = sessionKey,
+        scrollTop = lastScrollTopRef.current,
+        { force = false }: { force?: boolean; } = {}
+    ) => {
         // Honour the "don't remember sessions" preference at the write side too, so nothing is
-        // left behind to restore later.
-        if (rememberSessions === false) return;
+        // left behind to restore later. `force` overrides it for the jump-and-return round trip:
+        // that setting means "don't carry state between visits", not "lose my place when I click
+        // Jump", and the entry is consumed immediately on return.
+        if (rememberSessions === false && !force) return;
         const snapshot = stateSnapshotRef.current;
 
         CacheService.saveSession(targetSessionKey, {
@@ -596,6 +627,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             selectedThreadIds: snapshot.selectedThreadIds
         });
     }, [rememberSessions, sessionKey]);
+
+    /**
+     * Snapshot the gallery so it can be restored after "jump to message".
+     *
+     * Must run before NavigationRouter.transitionTo(): that changes the selected channel, which
+     * re-keys the session, so a save afterwards would be filed under the destination channel.
+     */
+    const handleBeforeJump = React.useCallback(() => {
+        persistSession(sessionKey, lastScrollTopRef.current, { force: true });
+        CacheService.markResumeSession(sessionKey);
+    }, [persistSession, sessionKey]);
 
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
         const next = mergeSessionState(session, initialQuery, {
@@ -641,6 +683,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     /** Resolve the live Discord target. Returns null when there is nothing searchable. */
     const resolveSearchTarget = () => {
+        // While pinned to a resumed session, keep querying the channel that session belongs to.
+        // Reading the live selection here would silently retarget "Load More" at whatever
+        // channel the jump landed in, so the user's next page would come from the wrong place.
+        if (pinnedKey) {
+            const [pinnedChannelId, pinnedGuildId] = pinnedKey.split("_");
+            const activeChannelId = pinnedChannelId === "nochan" ? undefined : pinnedChannelId;
+            const activeGuildId = pinnedGuildId === "noguild" ? undefined : pinnedGuildId;
+            if (activeChannelId || activeGuildId) return { activeChannelId, activeGuildId };
+        }
+
         const activeChannelId = SelectedChannelStore?.getChannelId();
         const activeChannel = activeChannelId ? ChannelStore?.getChannel(activeChannelId) : null;
         // Same DM-safe guard as above: only fall back to SelectedGuildStore when no channel is active.
@@ -1322,6 +1374,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             Gallery Mode
                         </h2>
                         <span className="gm-channel-pill">{channelPillLabel}</span>
+                        {!!pinnedKey && (
+                            <button
+                                className="gm-scope-btn gm-resumed-pill"
+                                onClick={() => setPinnedKey(null)}
+                                title="Restored from before you jumped to a message. Click to switch to the channel you're viewing now."
+                            >
+                                ↩ Resumed · switch to current channel
+                            </button>
+                        )}
                         {/* Always rendered (just blank when empty) and given a fixed min-width, so
                             switching filters can't resize it and shove the whole header sideways.
                             The digits use tabular figures for the same reason: proportional digits
@@ -1661,7 +1722,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         <MasonryGrid
                             items={loading ? [] : mediaItems}
                             columnWidth={parseInt(cardMinWidth, 10) || 240}
-                            renderItem={item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />}
+                            renderItem={item => (
+                                <MediaCard
+                                    key={item.id}
+                                    item={item}
+                                    onCloseGallery={onClose}
+                                    onBeforeJump={handleBeforeJump}
+                                />
+                            )}
                             trailing={showSkeletons ? <SkeletonGrid count={skeletonCount} ratios={recentRatios} /> : null}
                         />
                     ) : (
@@ -1669,7 +1737,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             className="gm-media-grid"
                             style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
                         >
-                            {!loading && mediaItems.map(item => <MediaCard key={item.id} item={item} onCloseGallery={onClose} />)}
+                            {!loading && mediaItems.map(item => (
+                                <MediaCard
+                                    key={item.id}
+                                    item={item}
+                                    onCloseGallery={onClose}
+                                    onBeforeJump={handleBeforeJump}
+                                />
+                            ))}
                             {showSkeletons && (
                                 <SkeletonGrid count={skeletonCount} ratios={recentRatios} />
                             )}

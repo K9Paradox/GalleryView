@@ -1954,3 +1954,19 @@ video.gm-modal-media {
     color: var(--gm-text-muted) !important;
     font-size: 12px;
 }
+
+/* Shown when the gallery was restored after a "jump to message", so it is obvious the view
+   is pinned to the earlier channel rather than the one now on screen. */
+.gm-resumed-pill {
+    background: var(--gm-fill-soft) !important;
+    border: 1px solid var(--gm-line) !important;
+    color: var(--gm-text) !important;
+    font-size: 11px !important;
+    padding: 4px 10px !important;
+    white-space: nowrap;
+}
+
+.gm-resumed-pill:hover {
+    background: var(--gm-accent) !important;
+    color: #fff !important;
+}

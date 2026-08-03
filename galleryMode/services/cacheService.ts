@@ -163,6 +163,29 @@ export class CacheService {
     /**
      * Retrieve active gallery viewing session state
      */
+    /**
+     * The session the user most recently had open, independent of which channel they are now
+     * viewing. Lets "jump to message" restore the gallery exactly as it was, rather than
+     * dropping them into the destination channel's (usually empty) session.
+     */
+    private static resumeSessionKey: string | null = null;
+
+    /** Mark a session to be restored the next time the gallery opens. */
+    public static markResumeSession(sessionKey: string): void {
+        this.resumeSessionKey = sessionKey;
+    }
+
+    /**
+     * Consume the pending resume target, if any. One-shot by design: jumping to a message and
+     * reopening should return you to where you were, but closing the gallery normally and
+     * browsing elsewhere should not resurrect a stale session later.
+     */
+    public static takeResumeSession(): string | null {
+        const key = this.resumeSessionKey;
+        this.resumeSessionKey = null;
+        return key;
+    }
+
     public static getSession(sessionKey: string): GallerySessionState | null {
         const session = this.sessions.get(sessionKey);
         if (!session) return null;
