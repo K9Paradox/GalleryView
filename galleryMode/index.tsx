@@ -56,8 +56,10 @@ export default definePlugin({
     searchTerms: ["gallery", "media", "images", "gifs", "videos", "search", "library"],
     authors: [
         {
-            name: "K9 & ENI",
-            id: 0n
+            name: "TheK9.",
+            // Discord user id. Set this to your own snowflake to have Vencord link the
+            // author name to your profile in the plugin list.
+            id: 153303492981686274n
         }
     ],
     settings,
