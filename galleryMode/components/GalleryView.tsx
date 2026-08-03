@@ -362,6 +362,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const pendingRestoreScrollRef = useRef<number | null>(initialSession.mediaItems.length > 0 ? initialSession.scrollTop : null);
     const skipAutoFetchRef = useRef<boolean>(initialSession.mediaItems.length > 0);
     const isHydratingSessionRef = useRef<boolean>(false);
+    // True while the restore loop is programmatically setting scrollTop, so the scroll handler
+    // can tell those events apart from real user scrolling.
+    const isRestoringScrollRef = useRef<boolean>(false);
     const stateSnapshotRef = useRef({
         mediaItems,
         offset,
@@ -1111,6 +1114,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const handleScroll = () => {
         const container = scrollContainerRef.current;
         const scrollTop = container?.scrollTop || 0;
+
+        // While a restore is in flight the container is still growing, so any scroll event here
+        // reports a clamped position. Persisting it would overwrite the saved depth with a
+        // smaller number and make the "reset to top" permanent — the restore target must win.
+        if (isRestoringScrollRef.current || pendingRestoreScrollRef.current != null) {
+            setShowScrollTop(scrollTop > 400);
+            return;
+        }
+
         // Only count it as user activity if the position actually moved.
         if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) lastUserScrollRef.current = Date.now();
         lastScrollTopRef.current = scrollTop;
@@ -1212,17 +1224,65 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         applySessionState(rememberSessions === false ? null : CacheService.getSession(sessionKey));
     }, [applySessionState, persistSession, rememberSessions, sessionKey]);
 
+    /**
+     * Restore the saved scroll position.
+     *
+     * This used to make a single attempt inside one rAF, which is why the gallery
+     * intermittently "reset" to the top. At that instant the grid is usually shorter than its
+     * final height — MasonryGrid mounts with one column before its ResizeObserver corrects the
+     * count, images are still decoding, and content-visibility cards only report their
+     * intrinsic size until painted. Assigning scrollTop past the current scrollHeight simply
+     * clamps, and the target was then discarded, so the position was lost for good. Whether it
+     * happened depended on cache warmth and decode timing, hence the randomness.
+     *
+     * Now we keep re-applying until the browser actually accepts the value (or the content
+     * genuinely cannot reach it), and only then stop.
+     */
     useEffect(() => {
-        const scrollTop = pendingRestoreScrollRef.current;
-        if (scrollTop == null || !scrollContainerRef.current) return;
+        const target = pendingRestoreScrollRef.current;
+        if (target == null || target <= 0) {
+            pendingRestoreScrollRef.current = null;
+            return;
+        }
 
-        pendingRestoreScrollRef.current = null;
-        requestAnimationFrame(() => {
-            if (scrollContainerRef.current) {
-                scrollContainerRef.current.scrollTop = scrollTop;
-                lastScrollTopRef.current = scrollTop;
+        let frame = 0;
+        let attempts = 0;
+        let cancelled = false;
+
+        const apply = () => {
+            if (cancelled) return;
+            const container = scrollContainerRef.current;
+            if (!container) return;
+
+            isRestoringScrollRef.current = true;
+            container.scrollTop = target;
+            lastScrollTopRef.current = container.scrollTop;
+
+            const settled = Math.abs(container.scrollTop - target) <= 1;
+            // Give the layout up to ~2s to grow; images and the masonry packer need a moment.
+            if (settled || ++attempts > 120) {
+                gmDebug("scroll restore finished", {
+                    target,
+                    reached: container.scrollTop,
+                    settled,
+                    frames: attempts
+                });
+                pendingRestoreScrollRef.current = null;
+                isRestoringScrollRef.current = false;
+                return;
             }
-        });
+
+            isRestoringScrollRef.current = false;
+            frame = requestAnimationFrame(apply);
+        };
+
+        frame = requestAnimationFrame(apply);
+
+        return () => {
+            cancelled = true;
+            isRestoringScrollRef.current = false;
+            if (frame) cancelAnimationFrame(frame);
+        };
     }, [mediaItems.length, sessionKey]);
 
     useEffect(() => {

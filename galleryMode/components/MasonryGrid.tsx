@@ -1,4 +1,4 @@
-import { React, useEffect, useRef, useState } from "@webpack/common";
+import { React, useEffect, useLayoutEffect, useRef, useState } from "@webpack/common";
 import { settings } from "../settings";
 import { MediaItem } from "../types";
 
@@ -34,39 +34,47 @@ const FOOTER_UNITS = 0.24;
  */
 export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem, trailing }: MasonryGridProps) {
     const containerRef = useRef<HTMLDivElement>(null);
-    const [columnCount, setColumnCount] = useState<number>(1);
+    // Measured synchronously below before first paint. Mounting at 1 column made the grid
+    // several times taller than its real height for a frame or two, which clamped scroll
+    // restoration to the wrong place.
+    const [columnCount, setColumnCount] = useState<number>(0);
     // Cards are shorter without the author footer, so the packer must account for it or the
     // columns come out unbalanced.
     const { showAuthorFooter } = settings.use(["showAuthorFooter"]);
     const footerUnits = showAuthorFooter === false ? 0 : FOOTER_UNITS;
 
-    // Recompute the column count from the real rendered width. ResizeObserver keeps this correct
-    // when the Discord window resizes, the sidebar collapses, or the density setting changes.
+    const measure = React.useCallback(() => {
+        const element = containerRef.current;
+        const width = element?.clientWidth;
+        if (!width) return;
+        // How many columns of at least `columnWidth` fit, accounting for the gaps between them.
+        const fitted = Math.floor((width + gap) / (columnWidth + gap));
+        setColumnCount(Math.max(1, fitted));
+    }, [columnWidth, gap]);
+
+    // Measure before the browser paints, so the very first rendered frame already has the right
+    // number of columns and therefore roughly the right height. Doing this in a passive effect
+    // let one wrong-height frame through, which was enough to break scroll restoration.
+    useLayoutEffect(measure, [measure]);
+
+    // Keep it correct as the window resizes, the sidebar collapses, or density changes.
     useEffect(() => {
         const element = containerRef.current;
         if (!element) return;
 
-        const recompute = () => {
-            const width = element.clientWidth;
-            if (!width) return;
-            // How many columns of at least `columnWidth` fit, accounting for the gaps between them.
-            const fitted = Math.floor((width + gap) / (columnWidth + gap));
-            setColumnCount(Math.max(1, fitted));
-        };
-
-        recompute();
-
         if (typeof ResizeObserver === "undefined") {
-            window.addEventListener("resize", recompute);
-            return () => window.removeEventListener("resize", recompute);
+            window.addEventListener("resize", measure);
+            return () => window.removeEventListener("resize", measure);
         }
 
-        const observer = new ResizeObserver(recompute);
+        const observer = new ResizeObserver(measure);
         observer.observe(element);
         return () => observer.disconnect();
-    }, [columnWidth, gap]);
+    }, [measure]);
 
     const columns = React.useMemo(() => {
+        // Not measured yet — render nothing rather than a tall single column.
+        if (columnCount < 1) return [];
         const buckets: MediaItem[][] = Array.from({ length: columnCount }, () => []);
         // Height is tracked in "column width" units so it stays resolution independent.
         const heights = new Array(columnCount).fill(0);
