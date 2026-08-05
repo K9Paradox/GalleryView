@@ -22,26 +22,7 @@ import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
 import { MasonryGrid } from "./MasonryGrid";
 import { SkeletonGrid } from "./SkeletonCard";
-import {
-    DensityVariant,
-    IconAll,
-    IconAudio,
-    IconChannel,
-    IconChevronDown,
-    IconClose,
-    IconDensity,
-    IconEmbed,
-    IconFile,
-    IconImage,
-    IconReply,
-    IconReset,
-    IconSearch,
-    IconServer,
-    IconSortAsc,
-    IconSortDesc,
-    IconThreads,
-    IconVideo
-} from "./Icons";
+import { DENSITY_RECTS, ICON_PATHS } from "./iconData";
 
 interface GalleryViewProps {
     onClose?: () => void;
@@ -61,29 +42,57 @@ type ScopeType = "channel" | "parent" | "guild";
 
 // Icon-driven header controls. Every button gets a full text label as its title/aria-label,
 // so the compact header loses none of the text buttons' meaning.
-const FILTER_TABS: ReadonlyArray<{
-    tab: FilterType;
-    label: string;
-    icon: React.ComponentType<{ size?: number; }>;
-}> = [
-    { tab: "all", label: "All media", icon: IconAll },
-    { tab: "image", label: "Images & GIFs", icon: IconImage },
-    { tab: "video", label: "Videos", icon: IconVideo },
-    { tab: "embed", label: "Embeds & links", icon: IconEmbed },
-    { tab: "file", label: "Files", icon: IconFile },
-    { tab: "audio", label: "Audio", icon: IconAudio }
-];
+const FILTER_TABS = [
+    { tab: "all", label: "All media", icon: "all" },
+    { tab: "image", label: "Images & GIFs", icon: "image" },
+    { tab: "video", label: "Videos", icon: "video" },
+    { tab: "embed", label: "Embeds & links", icon: "embed" },
+    { tab: "file", label: "Files", icon: "file" },
+    { tab: "audio", label: "Audio", icon: "audio" }
+] as const;
 
-const DENSITY_OPTIONS: ReadonlyArray<{
-    variant: DensityVariant;
-    value: string;
-    label: string;
-}> = [
+const DENSITY_OPTIONS = [
     { variant: "s", value: "180px", label: "Compact grid (~180px)" },
     { variant: "m", value: "240px", label: "Standard grid (~240px)" },
     { variant: "l", value: "320px", label: "Large grid (~320px)" },
     { variant: "xl", value: "420px", label: "Showcase grid (~420px)" }
-];
+] as const;
+
+function GmIcon({ name, size = 16, className }: { name: keyof typeof ICON_PATHS; size?: number; className?: string; }) {
+    const paths = ICON_PATHS[name] || ICON_PATHS.all;
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+            focusable="false"
+            className={className}
+        >
+            {paths.map((d, index) => <path key={index} d={d} />)}
+        </svg>
+    );
+}
+
+function DensityGlyph({ variant, size = 16, className }: { variant: keyof typeof DENSITY_RECTS; size?: number; className?: string; }) {
+    const rects = DENSITY_RECTS[variant] || DENSITY_RECTS.m;
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+            focusable="false"
+            className={className}
+        >
+            {rects.map((rect, index) => (
+                <rect key={index} x={rect[0]} y={rect[1]} width={rect[2]} height={rect[3]} rx={1.5} />
+            ))}
+        </svg>
+    );
+}
 
 const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
@@ -1638,7 +1647,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                 title="Restored from before you jumped to a message. Click to switch to the channel you're viewing now."
                                 aria-label="Resumed session — switch to the channel you're viewing now"
                             >
-                                <IconReply size={14} />
+                                <GmIcon name="reply" size={14} />
                             </button>
                         )}
                         {/* Always rendered (just blank when empty) and given a fixed min-width, so
@@ -1669,7 +1678,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     setShowChannelDropdown(false);
                                 }}
                             >
-                                <IconChannel size={15} />
+                                <GmIcon name="channel" size={15} />
                             </button>
                             {/* Only meaningful when the current channel is a thread/post, or the
                                 user is viewing a forum/media channel that contains posts. */}
@@ -1683,7 +1692,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     title={`Choose threads in #${threadHostChannel?.name || "this channel"}`}
                                     aria-label={`Choose threads in #${threadHostChannel?.name || "this channel"}`}
                                 >
-                                    <IconThreads size={15} />
+                                    <GmIcon name="threads" size={15} />
                                 </button>
                             )}
                             {!!guildId && (
@@ -1693,7 +1702,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     title="Scope: Entire server"
                                     aria-label="Search scope: Entire server"
                                 >
-                                    <IconServer size={15} />
+                                    <GmIcon name="server" size={15} />
                                 </button>
                             )}
                         </div>
@@ -1705,7 +1714,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     onClick={() => setShowThreadDropdown(value => !value)}
                                     title="Pick which threads to search"
                                 >
-                                    {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} threads` : "Threads"} <IconChevronDown size={12} />
+                                    {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} threads` : "Threads"} <GmIcon name="chevronDown" size={12} />
                                 </button>
                                 {showThreadDropdown && (
                                     <div className="gm-channel-dropdown">
@@ -1745,7 +1754,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     }}
                                     title="Pick which channels to search"
                                 >
-                                    {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} channels` : "Channels"} <IconChevronDown size={12} />
+                                    {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} channels` : "Channels"} <GmIcon name="chevronDown" size={12} />
                                 </button>
                                 {showChannelDropdown && (
                                     <div className="gm-channel-dropdown">
@@ -1833,7 +1842,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         role="group"
                         aria-label="Media type filter"
                     >
-                        {FILTER_TABS.map(({ tab, label, icon: TabIcon }) => {
+                        {FILTER_TABS.map(({ tab, label, icon }) => {
                             const isMulti = selectedTypes.length > 1;
                             const active = isMulti ? selectedTypes.includes(tab) : filterType === tab;
 
@@ -1846,7 +1855,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     title={label}
                                     onClick={(e) => toggleFilterTab(tab, e.shiftKey || e.ctrlKey || e.metaKey)}
                                 >
-                                    <TabIcon size={15} />
+                                    <GmIcon name={icon} size={15} />
                                 </button>
                             );
                         })}
@@ -1861,7 +1870,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                 aria-label={size.label}
                                 onClick={() => setCardMinWidth(size.value)}
                             >
-                                <IconDensity variant={size.variant} size={14} />
+                                <DensityGlyph variant={size.variant} size={14} />
                             </button>
                         ))}
                     </div>
@@ -1873,7 +1882,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             title="Clear all filters (search, author, dates, channels)"
                             aria-label="Clear all filters"
                         >
-                            <IconReset size={15} />
+                            <GmIcon name="reset" size={15} />
                         </button>
 
                         <button
@@ -1889,7 +1898,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
                         {!!onClose && (
                             <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)" aria-label="Exit Gallery Mode">
-                                <IconClose size={14} />
+                                <GmIcon name="close" size={14} />
                             </button>
                         )}
                     </div>
@@ -1948,7 +1957,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <button type="button" className="gm-search-clear-btn" title="Clear search" aria-label="Clear search" onClick={() => { setSearchQuery(""); setActiveQuery(""); }}>×</button>
                         )}
                         <button type="submit" className="gm-search-submit-btn" title="Search" aria-label="Search">
-                            <IconSearch size={14} />
+                            <GmIcon name="search" size={14} />
                         </button>
                     </form>
 
@@ -1978,7 +1987,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         title={sortOrder === "desc" ? "Newest first — click for oldest first" : "Oldest first — click for newest first"}
                         aria-label={sortOrder === "desc" ? "Sorted newest first" : "Sorted oldest first"}
                     >
-                        {sortOrder === "desc" ? <IconSortDesc size={15} /> : <IconSortAsc size={15} />}
+                        {sortOrder === "desc" ? <GmIcon name="sortDesc" size={15} /> : <GmIcon name="sortAsc" size={15} />}
                     </button>
                 </div>
             </div>

@@ -4,7 +4,7 @@ import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, open
 import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
 import { settings } from "../settings";
 import { MediaItem } from "../types";
-import { IconCopy, IconJump } from "./Icons";
+import { ICON_PATHS } from "./iconData";
 
 function isDiscordCdnHost(hostname: string): boolean {
     const host = hostname.toLowerCase();
@@ -36,6 +36,15 @@ function staticFrameUrl(url: string | undefined, allowCdn = false): string | und
 /** Thumbnail width/height requested in lightweight mode. Covers the largest density (420px)
  *  at ~1.15 DPR; the full-resolution original still loads when the user opens the preview. */
 const LITE_THUMB_SIZE = 480;
+
+function CardIcon({ name, size = 14 }: { name: "copy" | "jump"; size?: number; }) {
+    const paths = ICON_PATHS[name];
+    return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+            {paths.map((d, index) => <path key={index} d={d} />)}
+        </svg>
+    );
+}
 
 /**
  * Ask Discord's CDN for a downscaled rendition of an image. Width/height parameters are
@@ -548,7 +557,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                         title="Jump to Message in Chat"
                         aria-label="Jump to Message in Chat"
                     >
-                        <IconJump size={14} />
+                        <CardIcon name="jump" size={14} />
                     </button>
                     <button
                         className="gm-action-btn secondary gm-action-icon"
@@ -559,7 +568,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                         title="Copy media link"
                         aria-label="Copy media link"
                     >
-                        <IconCopy size={14} />
+                        <CardIcon name="copy" size={14} />
                     </button>
                 </div>
             </div>
