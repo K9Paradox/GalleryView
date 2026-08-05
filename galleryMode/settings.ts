@@ -23,6 +23,11 @@ export const settings = definePluginSettings({
             { label: "Showcase (~420px - High Detail)", value: "420px" }
         ]
     },
+    lightweightMode: {
+        type: OptionType.BOOLEAN,
+        description: "Lightweight mode — for low-end hardware. Forces animations off, strips backdrop blur, disables next-page prefetching and session/scroll memory, shows static GIF & poster-only video thumbnails, and loads downscaled preview images. Individual settings below are overridden while this is on.",
+        default: false
+    },
     animations: {
         type: OptionType.SELECT,
         description: "Motion & transitions",
@@ -111,8 +116,13 @@ export const settings = definePluginSettings({
     },
     rememberSessions: {
         type: OptionType.BOOLEAN,
-        description: "Restore your filters and scroll position when reopening a channel's gallery",
+        description: "Restore your filters and scroll position when reopening a channel's gallery. Disable to keep memory usage lower on long sessions. Position memory for jump-to-message still works either way.",
         default: true
+    },
+    hideBotPosts: {
+        type: OptionType.BOOLEAN,
+        description: "Hide media posted by bots and webhooks",
+        default: false
     },
     nsfw: {
         type: OptionType.BOOLEAN,

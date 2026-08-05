@@ -4,19 +4,51 @@ import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, open
 import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
 import { settings } from "../settings";
 import { MediaItem } from "../types";
+import { IconCopy, IconJump } from "./Icons";
+
+function isDiscordCdnHost(hostname: string): boolean {
+    const host = hostname.toLowerCase();
+    return host === "cdn.discordapp.com" || host === "media.discordapp.net" || host.endsWith(".discordapp.net");
+}
 
 /**
  * Ask Discord's media proxy for a still frame of an animated image. media.discordapp.net honours
  * `format=webp` + `animated=false`; anything it doesn't recognise is returned unchanged, and a
  * non-proxy URL is passed through untouched.
+ *
+ * `allowCdn` (lightweight mode) extends the same treatment to cdn.discordapp.com attachment
+ * URLs, which are fronted by the same media pipeline. If an edge case rejects the transform,
+ * the card's retry-once fallback restores the untouched URL rather than erroring out.
  */
-function staticFrameUrl(url?: string): string | undefined {
+function staticFrameUrl(url: string | undefined, allowCdn = false): string | undefined {
     if (!url) return url;
     try {
         const parsed = new URL(url);
-        if (parsed.hostname !== "media.discordapp.net") return url;
+        if (parsed.hostname !== "media.discordapp.net" && !(allowCdn && isDiscordCdnHost(parsed.hostname))) return url;
         parsed.searchParams.set("format", "webp");
         parsed.searchParams.set("animated", "false");
+        return parsed.toString();
+    } catch {
+        return url;
+    }
+}
+
+/** Thumbnail width/height requested in lightweight mode. Covers the largest density (420px)
+ *  at ~1.15 DPR; the full-resolution original still loads when the user opens the preview. */
+const LITE_THUMB_SIZE = 480;
+
+/**
+ * Ask Discord's CDN for a downscaled rendition of an image. Width/height parameters are
+ * honoured by the same media proxy pipeline that serves attachment and embed URLs, so a
+ * low-end gallery decodes tens of KB per card instead of multi-megabyte originals.
+ * Non-Discord URLs pass through untouched.
+ */
+function downscaledThumbUrl(url: string, size: number): string {
+    try {
+        const parsed = new URL(url);
+        if (!isDiscordCdnHost(parsed.hostname)) return url;
+        parsed.searchParams.set("width", String(size));
+        parsed.searchParams.set("height", String(size));
         return parsed.toString();
     } catch {
         return url;
@@ -160,11 +192,14 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [hovered, setHovered] = useState<boolean>(false);
 
-    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay, showAuthorFooter } =
+    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay, showAuthorFooter, lightweightMode } =
         settings.use([
             "gifPlayback", "videoPlayback", "respectSpoilers",
-            "blurNsfwChannels", "showMetaOverlay", "showAuthorFooter"
+            "blurNsfwChannels", "showMetaOverlay", "showAuthorFooter", "lightweightMode"
         ]);
+
+    // Lightweight mode: static GIF frames, poster-only videos and downscaled thumbnails.
+    const lite = lightweightMode === true;
 
     const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
     const [revealed, setRevealed] = useState<boolean>(false);
@@ -225,7 +260,8 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
         const video = videoRef.current;
         if (!video) return;
 
-        const mode = videoPlayback || "hover";
+        // Lightweight mode never plays inline previews — the poster frame is all we render.
+        const mode = lite ? "click" : (videoPlayback || "hover");
         const shouldPlay = !isHidden && (mode === "always" || (mode === "hover" && hovered));
 
         if (shouldPlay) {
@@ -235,7 +271,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
             // Rewind so the next hover starts from the beginning rather than mid-clip.
             if (mode === "hover" && !hovered) video.currentTime = 0;
         }
-    }, [hovered, isHidden, videoPlayback]);
+    }, [hovered, isHidden, videoPlayback, lite]);
 
     const jumpToMessage = () => {
         if (!item.channelId || !item.messageId) return;
@@ -340,10 +376,32 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
 
     // GIF playback control. Discord's media proxy renders a still frame when the request asks for
     // a non-animated format, so "static until hover/open" is a URL tweak rather than a JS pause.
-    const gifMode = gifPlayback || "always";
+    const gifMode = lite ? "click" : (gifPlayback || "always");
     const wantsStaticGif = item.type === "gif"
         && (gifMode === "click" || (gifMode === "hover" && !hovered) || isHidden);
-    const displaySrc = wantsStaticGif ? staticFrameUrl(rawDisplaySrc) : rawDisplaySrc;
+    const transformedSrc = (() => {
+        if (!rawDisplaySrc) return rawDisplaySrc;
+        if (wantsStaticGif) return staticFrameUrl(rawDisplaySrc, lite);
+        if (lite) return downscaledThumbUrl(rawDisplaySrc, LITE_THUMB_SIZE);
+        return rawDisplaySrc;
+    })();
+
+    // If a URL transform (static GIF frame, lite downscale) is rejected by the CDN, retry the
+    // card once with the untouched URL before showing the error placeholder. This keeps the
+    // transforms safe to apply even on payloads they were never exercised against.
+    const [retriedOriginal, setRetriedOriginal] = useState<boolean>(false);
+    const displaySrc = retriedOriginal ? rawDisplaySrc : transformedSrc;
+
+    const handleMediaError = () => {
+        if (!retriedOriginal && transformedSrc && transformedSrc !== rawDisplaySrc) {
+            setRetriedOriginal(true);
+            setMediaLoaded(false);
+            return;
+        }
+        setMediaLoaded(true);
+        setHasError(true);
+    };
+
     const videoSrc = item.type === "video" ? firstSafeMediaUrl(item.proxyUrl, item.url) : undefined;
     const typeLabel = (item.type || "file").toUpperCase();
     const avatar = avatarUrl(item);
@@ -428,7 +486,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                             ref={videoRef}
                             src={videoSrc}
                             poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
-                            preload="metadata"
+                            preload={lite ? "none" : "metadata"}
                             muted
                             loop
                             playsInline
@@ -474,10 +532,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                             height={item.height}
                             decoding="async"
                             onLoad={() => setMediaLoaded(true)}
-                            onError={() => {
-                                setMediaLoaded(true);
-                                setHasError(true);
-                            }}
+                            onError={handleMediaError}
                         />
                     </>
                 )}
@@ -487,16 +542,24 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                 )}
 
                 <div className="gm-card-actions-overlay">
-                    <button className="gm-action-btn primary" onClick={handleJumpToMessage} title="Jump to Message in Chat">Jump ➔</button>
                     <button
-                        className="gm-action-btn secondary"
+                        className="gm-action-btn primary gm-action-icon"
+                        onClick={handleJumpToMessage}
+                        title="Jump to Message in Chat"
+                        aria-label="Jump to Message in Chat"
+                    >
+                        <IconJump size={14} />
+                    </button>
+                    <button
+                        className="gm-action-btn secondary gm-action-icon"
                         onClick={(e) => {
                             e.stopPropagation();
                             copyMediaLink();
                         }}
-                        title="Copy Link"
+                        title="Copy media link"
+                        aria-label="Copy media link"
                     >
-                        📋
+                        <IconCopy size={14} />
                     </button>
                 </div>
             </div>

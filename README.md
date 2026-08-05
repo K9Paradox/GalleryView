@@ -43,6 +43,7 @@ It runs entirely on Discord's native `/messages/search` endpoint. Nothing is scr
 | **Channel picker** | Server-wide searches can target specific channels, grouped into collapsible categories with a filter box, per-category select-all, and threads nested under their owning channel |
 | **Media types** | All · Images & GIFs · Videos · Embeds · Files · Audio. <kbd>Shift</kbd> or <kbd>Ctrl</kbd> click to combine several |
 | **Filters** | Keyword search, multi-author filtering (works in DMs and group DMs), date range, newest/oldest sort |
+| **Content filters** | Optional one-switch exclusion of media posted by bots and webhooks |
 
 ### Browsing
 
@@ -62,9 +63,10 @@ Right-click any card for the same actions in a context menu.
 
 - Adapts automatically to **light, dark and custom themes**, by measuring Discord's actual background rather than guessing from a class name.
 - **Three motion tiers** — full (staggered reveals, blur-up thumbnails, hover lift), subtle, or off. `prefers-reduced-motion` is always respected.
+- **Lightweight mode** for low-end hardware: no animations, no backdrop blur, no prefetch, no session memory, poster-only videos, static GIFs, and CDN-downscaled thumbnails.
 - **Spoiler and age-restricted media** can stay blurred until clicked.
 - Metadata badges and the author footer can both be hidden for a pure gallery wall.
-- Responsive down to very small and very short windows.
+- Responsive down to very small and very short windows, and tolerant of Discord's own UI scaling/zoom — the grid, header and dropdowns shrink instead of breaking.
 
 ### Under the hood
 
@@ -76,6 +78,7 @@ Discord rate-limits search aggressively, so a lot of the work here is about aski
 - Separate pagination cursors for the attachment and embed streams.
 - Auto-loading paced against real user scrolling rather than layout churn.
 - `React.memo` on cards, LRU caches, and `content-visibility` so off-screen cards cost nothing.
+- A compact icon-driven header keeps every control labelled via tooltips while leaving more room for the media itself.
 
 ---
 
@@ -145,7 +148,10 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 | Skeleton placeholders | On / off | On |
 | Show date and type badges | On / off | On |
 | Show author footer | On / off | On |
+| **Lightweight mode** | On / off | Off |
 </details>
+
+> **Lightweight mode** is the one switch for low-end hardware: it forces motion off, removes backdrop blur, disables prefetching and session/scroll memory, renders GIFs and videos as static frames, and loads downscaled thumbnails. The individual settings above are overridden while it is on.
 
 <details>
 <summary><b>Media playback</b></summary>
@@ -164,6 +170,7 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 | Blur spoiler-tagged media | On / off | On |
 | Blur age-restricted channels | On / off | Off |
 | Include NSFW results | On / off | On |
+| Hide bot & webhook posts | On / off | Off |
 </details>
 
 <details>

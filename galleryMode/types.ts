@@ -71,6 +71,12 @@ export interface SearchParameters {
     nsfw?: boolean;
     /** Result ordering by message timestamp. Defaults to "desc" (newest first). */
     sortOrder?: GallerySortOrder;
+    /**
+     * Hide media posted by bots and webhooks. Applied client-side — Discord search cannot
+     * express author-type exclusion, but every message payload carries author.bot, so the
+     * filter is exact. (Matching messages still count towards Discord's total_results.)
+     */
+    excludeBots?: boolean;
 }
 
 export interface DiscordAttachment {
@@ -131,6 +137,8 @@ export interface DiscordMessage {
     content: string;
     timestamp: string;
     edited_timestamp?: string;
+    /** Present on messages posted through a webhook (feed/announcement relays, etc.). */
+    webhook_id?: string;
     attachments: DiscordAttachment[];
     embeds: DiscordEmbed[];
 }

@@ -284,6 +284,7 @@ export class SearchService {
             params.beforeDate ?? "",
             params.afterDate ?? "",
             params.nsfw === false ? "0" : "1",
+            params.excludeBots ? "nobots" : "allauthors",
             params.filterTypes?.length ? [...params.filterTypes].sort().join("+") : (params.filterType ?? "all")
         ].join("|");
     }
@@ -441,6 +442,14 @@ export class SearchService {
 
         for (const msg of messages) {
             if (!msg?.id || seenMessageIds.has(msg.id)) continue;
+
+            // Bot/webhook exclusion. Discord search has no author-type filter, but every
+            // payload carries author.bot (and webhook messages carry webhook_id), so the
+            // client-side filter is exact. Filtered messages still count towards
+            // total_results/offset advancement — pagination is unaffected, and the gallery's
+            // barren-page walker already handles pages that yield no renderable cards.
+            if (params.excludeBots && (msg.author?.bot || msg.webhook_id)) continue;
+
             seenMessageIds.add(msg.id);
 
             // Age-restricted source channel — used to optionally blur previews.
