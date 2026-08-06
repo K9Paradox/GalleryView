@@ -58,6 +58,32 @@ const DENSITY_OPTIONS = [
     { variant: "xl", value: "420px", label: "Showcase grid (~420px)" }
 ] as const;
 
+const QUICK_VIEW_OPTIONS = [
+    { value: "overlay", label: "Overlay", hint: "Full focus" },
+    { value: "dockLeft", label: "Left", hint: "Chat on right" },
+    { value: "dockRight", label: "Right", hint: "Chat on left" }
+] as const;
+
+const QUICK_PROFILE_OPTIONS = [
+    { value: "pretty", label: "Pretty", hint: "Glass + richer motion" },
+    { value: "balanced", label: "Balanced", hint: "Snappy default" },
+    { value: "lightweight", label: "Low-end", hint: "Static + no blur" }
+] as const;
+
+const QUICK_STYLE_OPTIONS = [
+    { value: "glass", label: "Glass" },
+    { value: "solid", label: "Solid" },
+    { value: "native", label: "Native" }
+] as const;
+
+function writeSetting(key: string, value: string | boolean) {
+    try {
+        (settings.store as any)[key] = value;
+    } catch (err) {
+        console.warn("[GalleryMode] Could not update setting", key, err);
+    }
+}
+
 function GmIcon({ name, size = 16, className }: { name: keyof typeof ICON_PATHS; size?: number; className?: string; }) {
     const paths = ICON_PATHS[name] || ICON_PATHS.all;
     return (
@@ -294,25 +320,31 @@ function mergeSessionState(
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
     const {
-        animations, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
-        layout, nsfw, prefetchNextPage, rememberSessions, skeletonPlaceholders,
-        lightweightMode, hideBotPosts
+        cardChrome, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
+        dockWidth, galleryStyle, layout, nsfw, performanceProfile, rememberSessions,
+        viewMode, hideBotPosts
     } = settings.use([
-        "animations", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
-        "layout", "nsfw", "prefetchNextPage", "rememberSessions", "skeletonPlaceholders",
-        "lightweightMode", "hideBotPosts"
+        "cardChrome", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
+        "dockWidth", "galleryStyle", "layout", "nsfw", "performanceProfile", "rememberSessions",
+        "viewMode", "hideBotPosts"
     ]);
 
     /**
-     * Lightweight mode is a master switch for low-end hardware. While it is on:
-     *  - motion is forced to the "off" tier (no stagger/blur-up/hover animation)
-     *  - the gm-lite class strips backdrop filters and drop shadows
-     *  - next-page prefetching is disabled (fewer requests, less memory)
-     *  - session memory is not written or restored (no retained item arrays)
-     *  - MediaCard renders static GIF frames, poster-only videos and downscaled thumbnails
+     * Experience presets are intentionally higher-level than the old pile of independent toggles.
+     * Humans pick an intent (pretty, balanced, low-end); the implementation fans that out into
+     * motion, prefetching, session memory and media preview behaviour. Fine-grained controls that
+     * are genuinely useful (thumbnail quality, preview behaviour, card chrome) remain available.
      */
-    const lite = lightweightMode === true;
-    const motion: string = lite ? "off" : (animations || "full");
+    const effectiveProfile = (performanceProfile || "balanced") as "pretty" | "balanced" | "lightweight";
+    const lite = effectiveProfile === "lightweight";
+    const motion: string = lite ? "off" : effectiveProfile === "pretty" ? "full" : "subtle";
+    const effectiveViewMode = (viewMode || "overlay") as "overlay" | "dockRight" | "dockLeft";
+    const effectiveDockWidth = dockWidth || "520px";
+    const effectiveStyle = (galleryStyle || "glass") as "glass" | "solid" | "native";
+    const effectiveCardChrome = (cardChrome || "full") as "full" | "compact" | "minimal";
+    const prefetchEnabled = !lite;
+    const skeletonsEnabled = !lite;
+    const pausePreviewsWhileScrolling = effectiveProfile !== "pretty";
     // Measured from Discord's live background so custom/light themes are handled, not guessed.
     const themeTone = useThemeTone();
     // Subscribe to the store rather than reading it once per render. Previously this was a bare
@@ -421,6 +453,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
     const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
+    const [showQuickSettings, setShowQuickSettings] = useState<boolean>(false);
+    const [isScrolling, setIsScrolling] = useState<boolean>(false);
 
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -428,6 +462,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const channelSelectRef = useRef<HTMLDivElement>(null);
     const threadSelectRef = useRef<HTMLDivElement>(null);
     const authorInputRef = useRef<HTMLDivElement>(null);
+    const quickSettingsRef = useRef<HTMLDivElement>(null);
+    const scrollingTimerRef = useRef<number | null>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const lastAutoLoadRef = useRef<number>(0);
@@ -1134,7 +1170,24 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             clearTimeout(deferredAutoLoadRef.current);
             deferredAutoLoadRef.current = null;
         }
+        if (scrollingTimerRef.current != null) {
+            clearTimeout(scrollingTimerRef.current);
+            scrollingTimerRef.current = null;
+        }
     }, []);
+
+    useEffect(() => {
+        if (!showQuickSettings) return;
+
+        const handlePointerDown = (event: MouseEvent) => {
+            const target = event.target as Node | null;
+            if (target && quickSettingsRef.current?.contains(target)) return;
+            setShowQuickSettings(false);
+        };
+
+        document.addEventListener("mousedown", handlePointerDown, true);
+        return () => document.removeEventListener("mousedown", handlePointerDown, true);
+    }, [showQuickSettings]);
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -1218,7 +1271,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
 
         // Only count it as user activity if the position actually moved.
-        if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) lastUserScrollRef.current = Date.now();
+        if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) {
+            lastUserScrollRef.current = Date.now();
+            if (pausePreviewsWhileScrolling) {
+                setIsScrolling(true);
+                if (scrollingTimerRef.current != null) clearTimeout(scrollingTimerRef.current);
+                scrollingTimerRef.current = window.setTimeout(() => {
+                    scrollingTimerRef.current = null;
+                    setIsScrolling(false);
+                }, 180);
+            }
+        }
         lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
         persistSession(sessionKey, scrollTop);
@@ -1502,7 +1565,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Keep one page ahead of the user at all times. When the current page settles, quietly warm
     // the next one into the cache so "Load More" / scrolling resolves instantly with no spinner.
     useEffect(() => {
-        if (!prefetchNextPage || lite) return;
+        if (!prefetchEnabled) return;
         if (loading || loadingMore || error || !hasMore) return;
         if (mediaItems.length === 0) return;
 
@@ -1517,7 +1580,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }, 400);
 
         return () => clearTimeout(timer);
-    }, [activeQuery, error, filterType, hasMore, lite, loading, loadingMore, mediaItems.length, offset, prefetchNextPage]);
+    }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset, prefetchEnabled]);
 
     useEffect(() => {
         const target = observerTargetRef.current;
@@ -1555,7 +1618,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return ratios;
     }, [mediaItems]);
 
-    const showSkeletons = skeletonPlaceholders && !error && (loading || loadingMore);
+    const showSkeletons = skeletonsEnabled && !error && (loading || loadingMore);
     // On a fresh query fill roughly a viewport; when appending, only show a page's worth.
     const skeletonCount = loading ? Math.min(PAGE_SIZE, 18) : Math.min(PAGE_SIZE, 8);
 
@@ -1572,6 +1635,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
         if (authorMenuOpen) {
             setAuthorMenuDismissed(true);
+            return;
+        }
+        if (showQuickSettings) {
+            setShowQuickSettings(false);
             return;
         }
         onClose?.();
@@ -1622,7 +1689,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const viewContent = (
         <div
-            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone}${lite ? " gm-lite" : ""}`}
+            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone} gm-view-${effectiveViewMode} gm-style-${effectiveStyle} gm-chrome-${effectiveCardChrome}${lite ? " gm-lite" : ""}${isScrolling ? " gm-is-scrolling" : ""}`}
+            style={{ "--gm-dock-width": effectiveDockWidth } as React.CSSProperties}
             ref={containerRef}
             tabIndex={-1}
             role="dialog"
@@ -1637,7 +1705,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM5 15l3.5-4.5 2.5 3.01L14.5 9l4.5 6H5z" />
                             </svg>
-                            Gallery Mode
+                            <span className="gm-plugin-title-text">Gallery Mode</span>
                         </h2>
                         <span className="gm-channel-pill" title={channelPillLabel}>{channelPillLabel}</span>
                         {!!pinnedKey && (
@@ -1885,16 +1953,88 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <GmIcon name="reset" size={15} />
                         </button>
 
-                        <button
-                            className="gm-icon-btn"
-                            onClick={openGallerySettings}
-                            title="Open GalleryMode plugin settings"
-                            aria-label="Open GalleryMode plugin settings"
-                        >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                                <path d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.48.48 0 0 0 .12-.61l-1.92-3.32a.48.48 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.73 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94 0 .31.02.63.06.94l-2.03 1.58a.48.48 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z" />
-                            </svg>
-                        </button>
+                        <div className="gm-quick-settings-wrap" ref={quickSettingsRef}>
+                            <button
+                                className={`gm-icon-btn ${showQuickSettings ? "active" : ""}`}
+                                onClick={() => setShowQuickSettings(open => !open)}
+                                title="Quick gallery settings"
+                                aria-label="Quick gallery settings"
+                                aria-haspopup="menu"
+                                aria-expanded={showQuickSettings}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <path d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.48.48 0 0 0 .12-.61l-1.92-3.32a.48.48 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.73 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94 0 .31.02.63.06.94l-2.03 1.58a.48.48 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z" />
+                                </svg>
+                            </button>
+
+                            {showQuickSettings && (
+                                <div className="gm-quick-settings-popover" role="menu" aria-label="Quick gallery settings">
+                                    <div className="gm-quick-settings-header">
+                                        <div>
+                                            <div className="gm-quick-title">Gallery setup</div>
+                                            <div className="gm-quick-subtitle">The common controls, without digging through Vencord settings.</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="gm-quick-section">
+                                        <div className="gm-quick-label">Window</div>
+                                        <div className="gm-quick-grid gm-quick-grid-3">
+                                            {QUICK_VIEW_OPTIONS.map(option => (
+                                                <button
+                                                    key={option.value}
+                                                    className={`gm-quick-choice ${effectiveViewMode === option.value ? "active" : ""}`}
+                                                    onClick={() => writeSetting("viewMode", option.value)}
+                                                >
+                                                    <span>{option.label}</span>
+                                                    <small>{option.hint}</small>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="gm-quick-section">
+                                        <div className="gm-quick-label">Experience</div>
+                                        <div className="gm-quick-grid gm-quick-grid-3">
+                                            {QUICK_PROFILE_OPTIONS.map(option => (
+                                                <button
+                                                    key={option.value}
+                                                    className={`gm-quick-choice ${effectiveProfile === option.value ? "active" : ""}`}
+                                                    onClick={() => writeSetting("performanceProfile", option.value)}
+                                                >
+                                                    <span>{option.label}</span>
+                                                    <small>{option.hint}</small>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="gm-quick-section">
+                                        <div className="gm-quick-label">Style</div>
+                                        <div className="gm-quick-grid gm-quick-grid-3">
+                                            {QUICK_STYLE_OPTIONS.map(option => (
+                                                <button
+                                                    key={option.value}
+                                                    className={`gm-quick-choice ${effectiveStyle === option.value ? "active" : ""}`}
+                                                    onClick={() => writeSetting("galleryStyle", option.value)}
+                                                >
+                                                    <span>{option.label}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        className="gm-quick-settings-link"
+                                        onClick={() => {
+                                            setShowQuickSettings(false);
+                                            openGallerySettings();
+                                        }}
+                                    >
+                                        Open all GalleryMode settings
+                                    </button>
+                                </div>
+                            )}
+                        </div>
 
                         {!!onClose && (
                             <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)" aria-label="Exit Gallery Mode">
@@ -2030,6 +2170,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     item={item}
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJump}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             )}
                             trailing={showSkeletons ? <SkeletonGrid count={skeletonCount} ratios={recentRatios} /> : null}
@@ -2045,6 +2186,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     item={item}
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJump}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             ))}
                             {showSkeletons && (
@@ -2054,7 +2196,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     )
                 )}
 
-                {loading && !skeletonPlaceholders && (
+                {loading && !skeletonsEnabled && (
                     <div className="gm-loading-state">
                         <div className="gm-spinner-icon gm-spinner-large" />
                         <p>Querying Discord Search…</p>
@@ -2062,7 +2204,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 )}
 
                 <div ref={observerTargetRef} className="gm-scroll-sentinel">
-                    {loadingMore && !skeletonPlaceholders && (
+                    {loadingMore && !skeletonsEnabled && (
                         <div className="gm-infinite-spinner-wrapper">
                             <div className="gm-spinner-icon" />
                             <span>Loading more media…</span>

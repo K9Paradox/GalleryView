@@ -33,9 +33,24 @@ function staticFrameUrl(url: string | undefined, allowCdn = false): string | und
     }
 }
 
-/** Thumbnail width/height requested in lightweight mode. Covers the largest density (420px)
- *  at ~1.15 DPR; the full-resolution original still loads when the user opens the preview. */
-const LITE_THUMB_SIZE = 480;
+type PerformanceProfile = "pretty" | "balanced" | "lightweight";
+type PreviewBehavior = "auto" | "animated" | "hover" | "static";
+type ThumbnailQuality = "auto" | "original" | "720" | "480" | "320";
+type CardChrome = "full" | "compact" | "minimal";
+
+function resolvePreviewBehavior(profile: PerformanceProfile, behavior: PreviewBehavior): Exclude<PreviewBehavior, "auto"> {
+    if (behavior && behavior !== "auto") return behavior;
+    if (profile === "lightweight") return "static";
+    if (profile === "pretty") return "animated";
+    return "hover";
+}
+
+function resolveThumbnailSize(profile: PerformanceProfile, quality: ThumbnailQuality): number | null {
+    if (quality === "original") return null;
+    if (quality === "720" || quality === "480" || quality === "320") return Number(quality);
+    if (profile === "lightweight") return 480;
+    return null;
+}
 
 function CardIcon({ name, size = 14 }: { name: "copy" | "jump"; size?: number; }) {
     const paths = ICON_PATHS[name];
@@ -97,6 +112,8 @@ interface MediaCardProps {
     onCloseGallery?: () => void;
     /** Called immediately before navigating away, so the gallery can snapshot its state. */
     onBeforeJump?: () => void;
+    /** Temporarily pause hover previews while the parent gallery is actively scrolling. */
+    previewsPaused?: boolean;
 }
 
 function formatDate(isoString?: string) {
@@ -195,20 +212,24 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
+function MediaCardImpl({ item, onCloseGallery, onBeforeJump, previewsPaused = false }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [hovered, setHovered] = useState<boolean>(false);
 
-    const { gifPlayback, videoPlayback, respectSpoilers, blurNsfwChannels, showMetaOverlay, showAuthorFooter, lightweightMode } =
+    const { performanceProfile, previewBehavior, thumbnailQuality, respectSpoilers, blurNsfwChannels, cardChrome } =
         settings.use([
-            "gifPlayback", "videoPlayback", "respectSpoilers",
-            "blurNsfwChannels", "showMetaOverlay", "showAuthorFooter", "lightweightMode"
+            "performanceProfile", "previewBehavior", "thumbnailQuality",
+            "respectSpoilers", "blurNsfwChannels", "cardChrome"
         ]);
 
-    // Lightweight mode: static GIF frames, poster-only videos and downscaled thumbnails.
-    const lite = lightweightMode === true;
+    const profile = (performanceProfile || "balanced") as PerformanceProfile;
+    const effectivePreview = resolvePreviewBehavior(profile, (previewBehavior || "auto") as PreviewBehavior);
+    const thumbnailSize = resolveThumbnailSize(profile, (thumbnailQuality || "auto") as ThumbnailQuality);
+    const chrome = (cardChrome || "full") as CardChrome;
+    const showMetaOverlay = chrome !== "minimal";
+    const showAuthorFooter = chrome === "full";
 
     const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
     const [revealed, setRevealed] = useState<boolean>(false);
@@ -269,9 +290,9 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
         const video = videoRef.current;
         if (!video) return;
 
-        // Lightweight mode never plays inline previews — the poster frame is all we render.
-        const mode = lite ? "click" : (videoPlayback || "hover");
-        const shouldPlay = !isHidden && (mode === "always" || (mode === "hover" && hovered));
+        // Low-end/static mode never plays inline previews — the poster frame is all we render.
+        const mode = effectivePreview === "static" ? "click" : "hover";
+        const shouldPlay = !previewsPaused && !isHidden && mode === "hover" && hovered;
 
         if (shouldPlay) {
             void video.play().catch(() => { /* autoplay can be refused; harmless */ });
@@ -280,7 +301,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
             // Rewind so the next hover starts from the beginning rather than mid-clip.
             if (mode === "hover" && !hovered) video.currentTime = 0;
         }
-    }, [hovered, isHidden, videoPlayback, lite]);
+    }, [hovered, isHidden, effectivePreview, previewsPaused]);
 
     const jumpToMessage = () => {
         if (!item.channelId || !item.messageId) return;
@@ -385,17 +406,17 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
 
     // GIF playback control. Discord's media proxy renders a still frame when the request asks for
     // a non-animated format, so "static until hover/open" is a URL tweak rather than a JS pause.
-    const gifMode = lite ? "click" : (gifPlayback || "always");
+    const gifMode = effectivePreview === "animated" ? "always" : effectivePreview === "hover" ? "hover" : "click";
     const wantsStaticGif = item.type === "gif"
-        && (gifMode === "click" || (gifMode === "hover" && !hovered) || isHidden);
+        && (gifMode === "click" || (gifMode === "hover" && (!hovered || previewsPaused)) || isHidden);
     const transformedSrc = (() => {
         if (!rawDisplaySrc) return rawDisplaySrc;
-        if (wantsStaticGif) return staticFrameUrl(rawDisplaySrc, lite);
-        if (lite) return downscaledThumbUrl(rawDisplaySrc, LITE_THUMB_SIZE);
-        return rawDisplaySrc;
+        let next = (wantsStaticGif ? staticFrameUrl(rawDisplaySrc, true) : rawDisplaySrc) || rawDisplaySrc;
+        if (thumbnailSize) next = downscaledThumbUrl(next, thumbnailSize);
+        return next;
     })();
 
-    // If a URL transform (static GIF frame, lite downscale) is rejected by the CDN, retry the
+    // If a URL transform (static GIF frame, thumbnail downscale) is rejected by the CDN, retry the
     // card once with the untouched URL before showing the error placeholder. This keeps the
     // transforms safe to apply even on payloads they were never exercised against.
     const [retriedOriginal, setRetriedOriginal] = useState<boolean>(false);
@@ -453,7 +474,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                 className="gm-media-preview-wrapper"
                 style={previewStyle}
             >
-                {showMetaOverlay !== false && <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>}
+                {showMetaOverlay && <div className={`gm-type-badge ${item.type}`}>{typeLabel}</div>}
 
                 {isHidden && (
                     <div
@@ -495,7 +516,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                             ref={videoRef}
                             src={videoSrc}
                             poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined}
-                            preload={lite ? "none" : "metadata"}
+                            preload={effectivePreview === "static" ? "none" : "metadata"}
                             muted
                             loop
                             playsInline
@@ -546,7 +567,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                     </>
                 )}
 
-                {showMetaOverlay !== false && item.timestamp && (
+                {showMetaOverlay && item.timestamp && (
                     <div className="gm-card-date-badge-bottom-right">{formatDate(item.timestamp)}</div>
                 )}
 
@@ -573,7 +594,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump }: MediaCardProps) {
                 </div>
             </div>
 
-            {showAuthorFooter !== false && (
+            {showAuthorFooter && (
             <div className="gm-card-footer" onClick={handleOpenAuthorProfile} title="View Author Profile">
                 {avatar ? (
                     <img className="gm-author-avatar" src={avatar} alt={item.author.username} />
