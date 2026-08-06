@@ -58,6 +58,20 @@ const DENSITY_OPTIONS = [
     { variant: "xl", value: "420px", label: "Showcase grid (~420px)" }
 ] as const;
 
+const VIEW_MODE_OPTIONS = [
+    { value: "dockLeft", label: "Dock gallery left", icon: "dockLeft" },
+    { value: "overlay", label: "Fullscreen overlay", icon: "overlay" },
+    { value: "dockRight", label: "Dock gallery right", icon: "dockRight" }
+] as const;
+
+function writeSetting(key: string, value: string | boolean) {
+    try {
+        (settings.store as any)[key] = value;
+    } catch (err) {
+        console.warn("[GalleryMode] Could not update setting", key, err);
+    }
+}
+
 function GmIcon({ name, size = 16, className }: { name: keyof typeof ICON_PATHS; size?: number; className?: string; }) {
     const paths = ICON_PATHS[name] || ICON_PATHS.all;
     return (
@@ -371,6 +385,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const prefetchEnabled = !lite;
     const skeletonsEnabled = !lite;
     const pausePreviewsWhileScrolling = effectiveProfile !== "pretty";
+
     // Measured from Discord's live background so custom/light themes are handled, not guessed.
     const themeTone = useThemeTone();
     // Subscribe to the store rather than reading it once per render. Previously this was a bare
@@ -481,6 +496,25 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
     const [isScrolling, setIsScrolling] = useState<boolean>(false);
     const [dockWidth, setDockWidth] = useState<number>(() => readSavedDockWidth());
+
+    const selectedCardWidth = parseInt(cardMinWidth, 10) || parseInt(defaultCardSize || "240", 10) || 240;
+    const dockContentWidth = Math.max(240, dockWidth - 32);
+    const adaptiveCardMinWidth = (() => {
+        if (!isDocked) return selectedCardWidth;
+        // In a side dock, compact/standard should still become multiple columns when possible.
+        // Without this, a 240px "standard" tile in a 360-420px dock stretches into one huge card,
+        // making the density buttons feel broken. Large/showcase intentionally stay single-column.
+        if (selectedCardWidth <= 240 && dockContentWidth >= 300) {
+            return Math.max(144, Math.min(selectedCardWidth, Math.floor((dockContentWidth - 16) / 2)));
+        }
+        return Math.min(selectedCardWidth, dockContentWidth);
+    })();
+    const adaptiveCardMaxWidth = Math.max(
+        adaptiveCardMinWidth,
+        Math.min(selectedCardWidth + 64, isDocked ? dockContentWidth : selectedCardWidth + 96)
+    );
+    const adaptiveCardMinWidthPx = `${adaptiveCardMinWidth}px`;
+    const adaptiveCardMaxWidthPx = `${adaptiveCardMaxWidth}px`;
 
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -2029,6 +2063,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         ))}
                     </div>
 
+                    <div className="gm-scope-toggle gm-window-toggle" role="group" aria-label="Gallery window mode" title="Gallery window mode">
+                        {VIEW_MODE_OPTIONS.map(option => (
+                            <button
+                                key={option.value}
+                                className={`gm-scope-btn gm-icon-only ${effectiveViewMode === option.value ? "active" : ""}`}
+                                title={option.label}
+                                aria-label={option.label}
+                                onClick={() => writeSetting("viewMode", option.value)}
+                            >
+                                <GmIcon name={option.icon} size={15} />
+                            </button>
+                        ))}
+                    </div>
+
                     <div className="gm-header-actions">
                         <button
                             className="gm-icon-btn"
@@ -2177,13 +2225,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     layout === "masonry" ? (
                         <MasonryGrid
                             items={loading ? [] : mediaItems}
-                            columnWidth={parseInt(cardMinWidth, 10) || 240}
+                            columnWidth={adaptiveCardMinWidth}
                             renderItem={item => (
                                 <MediaCard
                                     key={item.id}
                                     item={item}
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJump}
+                                    closeOnJump={!isDocked}
                                     previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             )}
@@ -2192,7 +2241,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     ) : (
                         <div
                             className="gm-media-grid"
-                            style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
+                            style={{
+                                "--gm-card-min-width": adaptiveCardMinWidthPx,
+                                "--gm-card-max-width": adaptiveCardMaxWidthPx,
+                                "--gm-col-width": adaptiveCardMinWidthPx
+                            } as React.CSSProperties}
                         >
                             {!loading && mediaItems.map(item => (
                                 <MediaCard
@@ -2200,6 +2253,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     item={item}
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJump}
+                                    closeOnJump={!isDocked}
                                     previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             ))}

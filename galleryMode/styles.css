@@ -445,7 +445,14 @@
    alignment. It was previously patched only under 640px; the bug existed above that too. */
 .gm-media-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
+    /*
+     * Cards now have both an adaptive minimum and an adaptive maximum. The old 1fr max made a
+     * one-column dock stretch every density into the same giant card, so Compact/Standard/Large
+     * felt broken in narrow split-screen mode. The max keeps one-column cards proportional while
+     * still allowing rows to breathe on wide overlays.
+     */
+    grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), var(--gm-card-max-width, 1fr)));
+    justify-content: center;
     gap: 16px;
 }
 
@@ -2152,12 +2159,44 @@ html.gm-dock-active-left .gm-discord-reserved-for-gallery {
     width: 100%;
 }
 
+.gm-view-dockRight .gm-header-row-search,
+.gm-view-dockLeft .gm-header-row-search {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.gm-view-dockRight .gm-author-search-wrap,
+.gm-view-dockLeft .gm-author-search-wrap,
 .gm-view-dockRight .gm-search-form,
 .gm-view-dockLeft .gm-search-form,
+.gm-view-dockRight .gm-date-range-wrap,
+.gm-view-dockLeft .gm-date-range-wrap {
+    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+}
+
 .gm-view-dockRight .gm-author-input-wrap,
 .gm-view-dockLeft .gm-author-input-wrap {
-    flex: 1 1 190px;
+    flex: 1 1 160px;
     min-width: 0;
+}
+
+.gm-view-dockRight .gm-date-range-wrap,
+.gm-view-dockLeft .gm-date-range-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.gm-view-dockRight .gm-sort-btn,
+.gm-view-dockLeft .gm-sort-btn {
+    align-self: flex-start;
+}
+
+.gm-window-toggle {
+    margin-left: 0;
 }
 
 .gm-dock-resize-handle {

@@ -112,6 +112,8 @@ interface MediaCardProps {
     onCloseGallery?: () => void;
     /** Called immediately before navigating away, so the gallery can snapshot its state. */
     onBeforeJump?: () => void;
+    /** Full overlay closes on jump; docked galleries stay open beside chat. */
+    closeOnJump?: boolean;
     /** Temporarily pause hover previews while the parent gallery is actively scrolling. */
     previewsPaused?: boolean;
 }
@@ -212,7 +214,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-function MediaCardImpl({ item, onCloseGallery, onBeforeJump, previewsPaused = false }: MediaCardProps) {
+function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true, previewsPaused = false }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
@@ -310,7 +312,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, previewsPaused = fa
         // point would land under the wrong key and the user's query/scope would be lost.
         onBeforeJump?.();
         NavigationRouter.transitionTo(`/channels/${item.guildId || "@me"}/${item.channelId}/${item.messageId}`);
-        onCloseGallery?.();
+        if (closeOnJump) onCloseGallery?.();
     };
 
     const handleJumpToMessage = (e: React.MouseEvent) => {

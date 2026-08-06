@@ -50,7 +50,7 @@ It runs entirely on Discord's native `/messages/search` endpoint. Nothing is scr
 - **Two layouts** — a uniform grid, or true masonry that respects each image's aspect ratio while preserving reading order.
 - **Four densities** — Compact, Standard, Large and Showcase.
 - **Infinite scroll** with preset-aware background prefetch, so Balanced and Pretty feel instant while Low-end avoids extra work.
-- **Docked split-screen mode** can pin the gallery to the left or right, reserve room for chat when Discord's layout can be safely detected, and resize by dragging the dock edge.
+- **Docked split-screen mode** can pin the gallery to the left or right, reserve room for chat when Discord's layout can be safely detected, switch directly from the gallery header, and resize by dragging the dock edge.
 - **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message (Low-end disables cross-session memory).
 
 ### Per-item actions
@@ -127,10 +127,11 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 |---|---|
 | Open / close | Header bar icon, or <kbd>Esc</kbd> to close |
 | Combine media types | <kbd>Shift</kbd> or <kbd>Ctrl</kbd> click the type tabs |
-| Change density | The four grid-density icons in the header |
+| Change density | The four grid-density icons in the header; card sizes clamp to the current window/dock width |
 | Search a specific thread | Open the thread first, then the gallery |
 | Search every thread in a channel | Use the thread-scope icon, then the Threads picker to narrow it |
 | Reset every filter | The circular reset icon |
+| Switch overlay/dock mode | Use the left-dock / overlay / right-dock icons in the header |
 | Resize docked gallery | Drag the inner edge of the docked panel |
 | Open plugin settings | The gear icon in the gallery header |
 
