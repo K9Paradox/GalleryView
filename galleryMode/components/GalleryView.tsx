@@ -499,22 +499,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const selectedCardWidth = parseInt(cardMinWidth, 10) || parseInt(defaultCardSize || "240", 10) || 240;
     const dockContentWidth = Math.max(240, dockWidth - 32);
-    const adaptiveCardMinWidth = (() => {
-        if (!isDocked) return selectedCardWidth;
-        // In a side dock, compact/standard should still become multiple columns when possible.
-        // Without this, a 240px "standard" tile in a 360-420px dock stretches into one huge card,
-        // making the density buttons feel broken. Large/showcase intentionally stay single-column.
-        if (selectedCardWidth <= 240 && dockContentWidth >= 300) {
-            return Math.max(144, Math.min(selectedCardWidth, Math.floor((dockContentWidth - 16) / 2)));
-        }
-        return Math.min(selectedCardWidth, dockContentWidth);
+    const dockTargetCardWidth = (() => {
+        // Docked density should describe how many photos fit in the panel, not a fixed pixel size
+        // that turns every narrow dock into one or two oversized cards.
+        if (selectedCardWidth <= 180) return 132;
+        if (selectedCardWidth <= 240) return 176;
+        if (selectedCardWidth <= 320) return 240;
+        return 320;
     })();
-    const adaptiveCardMaxWidth = Math.max(
-        adaptiveCardMinWidth,
-        Math.min(selectedCardWidth + 64, isDocked ? dockContentWidth : selectedCardWidth + 96)
+    const dockMaxColumns = selectedCardWidth <= 180 ? 4 : selectedCardWidth <= 240 ? 3 : 2;
+    const dockGridColumns = Math.max(
+        1,
+        Math.min(dockMaxColumns, Math.floor((dockContentWidth + 16) / (dockTargetCardWidth + 16)))
     );
-    const adaptiveCardMinWidthPx = `${adaptiveCardMinWidth}px`;
-    const adaptiveCardMaxWidthPx = `${adaptiveCardMaxWidth}px`;
+    const adaptiveColumnWidth = isDocked ? dockTargetCardWidth : selectedCardWidth;
+    const adaptiveCardMinWidthPx = `${selectedCardWidth}px`;
 
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -2225,7 +2224,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     layout === "masonry" ? (
                         <MasonryGrid
                             items={loading ? [] : mediaItems}
-                            columnWidth={adaptiveCardMinWidth}
+                            columnWidth={adaptiveColumnWidth}
                             renderItem={item => (
                                 <MediaCard
                                     key={item.id}
@@ -2243,7 +2242,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             className="gm-media-grid"
                             style={{
                                 "--gm-card-min-width": adaptiveCardMinWidthPx,
-                                "--gm-card-max-width": adaptiveCardMaxWidthPx,
+                                "--gm-grid-columns": dockGridColumns,
                                 "--gm-col-width": adaptiveCardMinWidthPx
                             } as React.CSSProperties}
                         >

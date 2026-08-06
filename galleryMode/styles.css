@@ -446,13 +446,12 @@
 .gm-media-grid {
     display: grid;
     /*
-     * Cards now have both an adaptive minimum and an adaptive maximum. The old 1fr max made a
-     * one-column dock stretch every density into the same giant card, so Compact/Standard/Large
-     * felt broken in narrow split-screen mode. The max keeps one-column cards proportional while
-     * still allowing rows to breathe on wide overlays.
+     * Full overlay mode should always spend the available row width: smaller density means more
+     * columns, and the columns share leftover space instead of leaving centered dead gutters.
+     * Docked mode overrides this to an explicit column count derived from the current dock width.
      */
-    grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), var(--gm-card-max-width, 1fr)));
-    justify-content: center;
+    grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
+    justify-content: stretch;
     gap: 16px;
 }
 
@@ -2157,6 +2156,17 @@ html.gm-dock-active-left .gm-discord-reserved-for-gallery {
 .gm-view-dockRight .gm-header-right,
 .gm-view-dockLeft .gm-header-right {
     width: 100%;
+}
+
+.gm-view-dockRight .gm-media-grid:not(.gm-masonry),
+.gm-view-dockLeft .gm-media-grid:not(.gm-masonry) {
+    grid-template-columns: repeat(var(--gm-grid-columns, 2), minmax(0, 1fr));
+    justify-content: stretch;
+}
+
+.gm-view-dockRight .gm-gallery-content,
+.gm-view-dockLeft .gm-gallery-content {
+    padding: 10px;
 }
 
 .gm-view-dockRight .gm-header-row-search,
