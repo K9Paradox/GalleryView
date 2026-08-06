@@ -50,7 +50,7 @@ It runs entirely on Discord's native `/messages/search` endpoint. Nothing is scr
 - **Two layouts** — a uniform grid, or true masonry that respects each image's aspect ratio while preserving reading order.
 - **Four densities** — Compact, Standard, Large and Showcase.
 - **Infinite scroll** with preset-aware background prefetch, so Balanced and Pretty feel instant while Low-end avoids extra work.
-- **Docked split-screen mode** can pin the gallery to the left or right while chat remains usable beside it.
+- **Docked split-screen mode** can pin the gallery to the left or right, reserve room for chat when Discord's layout can be safely detected, and resize by dragging the dock edge.
 - **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message (Low-end disables cross-session memory).
 
 ### Per-item actions
@@ -63,7 +63,6 @@ Right-click any card for the same actions in a context menu.
 
 - Adapts automatically to **light, dark and custom themes**, by measuring Discord's actual background rather than guessing from a class name.
 - **Experience presets** — Pretty, Balanced, and Low-end — control motion, blur, prefetching, session memory and media preview cost as one human-facing choice.
-- **Style presets** — Glass, Solid, and Discord Native — let the gallery match a premium, practical, or flatter Discord-like design language.
 - **Spoiler and age-restricted media** can stay blurred until clicked.
 - Card information density can be Full, Compact, or Minimal for a pure gallery wall.
 - Responsive down to very small and very short windows, and tolerant of Discord's own UI scaling/zoom — the grid, header, docked mode and dropdowns shrink instead of breaking.
@@ -79,7 +78,7 @@ Discord rate-limits search aggressively, so a lot of the work here is about aski
 - Auto-loading paced against real user scrolling rather than layout churn.
 - `React.memo` on cards, LRU caches, and `content-visibility` so off-screen cards cost nothing.
 - Scroll-aware preview pausing in Balanced/Low-end keeps GIF/video work from fighting active scrolling.
-- A compact icon-driven header plus an in-gallery quick settings popover keeps every control labelled while leaving more room for the media itself.
+- A compact icon-driven header keeps every control labelled via tooltips while leaving more room for the media itself.
 
 ---
 
@@ -132,14 +131,14 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 | Search a specific thread | Open the thread first, then the gallery |
 | Search every thread in a channel | Use the thread-scope icon, then the Threads picker to narrow it |
 | Reset every filter | The circular reset icon |
-| Quick settings | The gear icon in the gallery header |
-| Open all plugin settings | Gear icon → **Open all GalleryMode settings** |
+| Resize docked gallery | Drag the inner edge of the docked panel |
+| Open plugin settings | The gear icon in the gallery header |
 
 ---
 
 ## ⚙️ Settings
 
-The settings are intentionally grouped around how people think about the gallery, not how the implementation works. Most users should only need **Gallery window**, **Experience preset**, **Visual style**, and **Card density**; the remaining options are defaults or content-safety preferences.
+The settings are intentionally grouped around how people think about the gallery, not how the implementation works. Most users should only need **Gallery window**, **Experience preset**, **Gallery layout**, **Card density**, and **Card information density**; the remaining options are defaults or content-safety preferences.
 
 <details>
 <summary><b>Window and experience</b></summary>
@@ -147,9 +146,7 @@ The settings are intentionally grouped around how people think about the gallery
 | Setting | Options | Default |
 |---|---|---|
 | Gallery window | Overlay · Dock right · Dock left | Overlay |
-| Docked gallery width | 360px · 420px · 520px · 640px | 520px |
 | Experience preset | Balanced · Pretty · Low-end | Balanced |
-| Visual style | Glass · Solid · Discord native | Glass |
 </details>
 
 > **Low-end** forces motion off, removes backdrop blur, disables background prefetch and cross-session memory, pauses inline media, and uses downscaled/static previews. **Balanced** keeps the UI snappy and pauses previews while scrolling. **Pretty** keeps the richer glass/motion treatment.

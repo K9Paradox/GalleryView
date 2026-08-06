@@ -6,10 +6,10 @@ import { OptionType } from "@utils/types";
 // module cycle, which makes plugin startup order fragile.
 export const settings = definePluginSettings({
     /**
-     * The settings are intentionally ordered from "I just want the gallery to feel right" to
-     * "power-user defaults". Vencord's built-in plugin settings UI is a flat list, so we collapse
-     * redundant knobs into human-facing choices (preset, style, card chrome) instead of exposing
-     * every implementation detail as another toggle.
+     * Vencord's userplugin settings surface is essentially a flat list, so the ordering below is
+     * deliberate product design: common, human-facing choices first; defaults/content controls in
+     * the middle; advanced performance tuning last. Avoid reintroducing one-off implementation
+     * toggles unless they are meaningful to a normal user.
      */
     viewMode: {
         type: OptionType.SELECT,
@@ -20,32 +20,13 @@ export const settings = definePluginSettings({
             { label: "Dock left — split-screen with chat", value: "dockLeft" }
         ]
     },
-    dockWidth: {
-        type: OptionType.SELECT,
-        description: "Docked gallery width",
-        options: [
-            { label: "Narrow — 360px", value: "360px" },
-            { label: "Comfortable — 420px", value: "420px" },
-            { label: "Wide — 520px", value: "520px", default: true },
-            { label: "Showcase — 640px", value: "640px" }
-        ]
-    },
     performanceProfile: {
         type: OptionType.SELECT,
         description: "Experience preset",
         options: [
-            { label: "Balanced — snappy motion, normal thumbnails, sensible prefetch", value: "balanced", default: true },
-            { label: "Pretty — glass, richer animation and warmer prefetch", value: "pretty" },
-            { label: "Low-end — no motion/blur, static previews, no prefetch or session memory", value: "lightweight" }
-        ]
-    },
-    galleryStyle: {
-        type: OptionType.SELECT,
-        description: "Visual style",
-        options: [
-            { label: "Glass — translucent premium overlay", value: "glass", default: true },
-            { label: "Solid — cleaner and cheaper to render", value: "solid" },
-            { label: "Discord native — flatter, closer to the app", value: "native" }
+            { label: "Balanced — snappy default, pauses previews while scrolling", value: "balanced", default: true },
+            { label: "Pretty — richer motion and glass treatment", value: "pretty" },
+            { label: "Low-end — no blur/motion, static previews, no prefetch or session memory", value: "lightweight" }
         ]
     },
     layout: {
@@ -66,27 +47,6 @@ export const settings = definePluginSettings({
             { label: "Showcase — 420px", value: "420px" }
         ]
     },
-    thumbnailQuality: {
-        type: OptionType.SELECT,
-        description: "Thumbnail quality",
-        options: [
-            { label: "Auto — follows the experience preset", value: "auto", default: true },
-            { label: "Original — highest detail, most memory", value: "original" },
-            { label: "High — 720px", value: "720" },
-            { label: "Medium — 480px", value: "480" },
-            { label: "Low — 320px", value: "320" }
-        ]
-    },
-    previewBehavior: {
-        type: OptionType.SELECT,
-        description: "GIF and video previews",
-        options: [
-            { label: "Auto — follows the experience preset", value: "auto", default: true },
-            { label: "Animated — GIFs animate, videos preview on hover", value: "animated" },
-            { label: "Hover — animate/play only while hovered", value: "hover" },
-            { label: "Static — only play when opened", value: "static" }
-        ]
-    },
     cardChrome: {
         type: OptionType.SELECT,
         description: "Card information density",
@@ -95,6 +55,11 @@ export const settings = definePluginSettings({
             { label: "Compact — badges only", value: "compact" },
             { label: "Minimal — clean media wall", value: "minimal" }
         ]
+    },
+    hideBotPosts: {
+        type: OptionType.BOOLEAN,
+        description: "Hide media posted by bots and webhooks",
+        default: false
     },
     defaultScope: {
         type: OptionType.SELECT,
@@ -125,16 +90,6 @@ export const settings = definePluginSettings({
             { label: "Oldest first", value: "asc" }
         ]
     },
-    rememberSessions: {
-        type: OptionType.BOOLEAN,
-        description: "Remember filters, results and scroll position between gallery opens. Low-end preset overrides this off.",
-        default: true
-    },
-    hideBotPosts: {
-        type: OptionType.BOOLEAN,
-        description: "Hide media posted by bots and webhooks",
-        default: false
-    },
     respectSpoilers: {
         type: OptionType.BOOLEAN,
         description: "Blur spoiler-tagged media until clicked",
@@ -148,6 +103,32 @@ export const settings = definePluginSettings({
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",
+        default: true
+    },
+    thumbnailQuality: {
+        type: OptionType.SELECT,
+        description: "Advanced: thumbnail quality",
+        options: [
+            { label: "Auto — follows the experience preset", value: "auto", default: true },
+            { label: "Original — highest detail, most memory", value: "original" },
+            { label: "High — 720px", value: "720" },
+            { label: "Medium — 480px", value: "480" },
+            { label: "Low — 320px", value: "320" }
+        ]
+    },
+    previewBehavior: {
+        type: OptionType.SELECT,
+        description: "Advanced: GIF and video previews",
+        options: [
+            { label: "Auto — follows the experience preset", value: "auto", default: true },
+            { label: "Animated — GIFs animate, videos preview on hover", value: "animated" },
+            { label: "Hover — animate/play only while hovered", value: "hover" },
+            { label: "Static — only play when opened", value: "static" }
+        ]
+    },
+    rememberSessions: {
+        type: OptionType.BOOLEAN,
+        description: "Advanced: remember filters, results and scroll position between gallery opens. Low-end preset overrides this off.",
         default: true
     }
 });

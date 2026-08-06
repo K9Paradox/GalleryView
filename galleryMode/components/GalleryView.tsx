@@ -58,32 +58,6 @@ const DENSITY_OPTIONS = [
     { variant: "xl", value: "420px", label: "Showcase grid (~420px)" }
 ] as const;
 
-const QUICK_VIEW_OPTIONS = [
-    { value: "overlay", label: "Overlay", hint: "Full focus" },
-    { value: "dockLeft", label: "Left", hint: "Chat on right" },
-    { value: "dockRight", label: "Right", hint: "Chat on left" }
-] as const;
-
-const QUICK_PROFILE_OPTIONS = [
-    { value: "pretty", label: "Pretty", hint: "Glass + richer motion" },
-    { value: "balanced", label: "Balanced", hint: "Snappy default" },
-    { value: "lightweight", label: "Low-end", hint: "Static + no blur" }
-] as const;
-
-const QUICK_STYLE_OPTIONS = [
-    { value: "glass", label: "Glass" },
-    { value: "solid", label: "Solid" },
-    { value: "native", label: "Native" }
-] as const;
-
-function writeSetting(key: string, value: string | boolean) {
-    try {
-        (settings.store as any)[key] = value;
-    } catch (err) {
-        console.warn("[GalleryMode] Could not update setting", key, err);
-    }
-}
-
 function GmIcon({ name, size = 16, className }: { name: keyof typeof ICON_PATHS; size?: number; className?: string; }) {
     const paths = ICON_PATHS[name] || ICON_PATHS.all;
     return (
@@ -124,6 +98,61 @@ const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
+
+const DOCK_STORAGE_KEY = "GalleryMode:dockWidth";
+const DOCK_DEFAULT_WIDTH = 520;
+const DOCK_MIN_WIDTH = 320;
+const DOCK_MAX_WIDTH = 760;
+const DOCK_MIN_CHAT_WIDTH = 360;
+const DOCK_RESERVE_GAP = 96;
+
+function clampDockWidth(width: number): number {
+    let max = DOCK_MAX_WIDTH;
+    try {
+        max = Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, window.innerWidth - DOCK_MIN_CHAT_WIDTH - DOCK_RESERVE_GAP));
+    } catch {
+        // Module evaluated outside a browser-like context; keep the static max.
+    }
+    return Math.round(Math.min(Math.max(width, DOCK_MIN_WIDTH), max));
+}
+
+function readSavedDockWidth(): number {
+    try {
+        const saved = Number(localStorage.getItem(DOCK_STORAGE_KEY));
+        if (Number.isFinite(saved) && saved > 0) return clampDockWidth(saved);
+    } catch {
+        // Non-fatal; the default dock width is fine.
+    }
+    return clampDockWidth(DOCK_DEFAULT_WIDTH);
+}
+
+function saveDockWidth(width: number) {
+    try {
+        localStorage.setItem(DOCK_STORAGE_KEY, String(clampDockWidth(width)));
+    } catch {
+        // Non-fatal; the drag still works for this session.
+    }
+}
+
+function findDockReservationTarget(): HTMLElement | null {
+    const appMount = document.getElementById("app-mount");
+    if (!appMount) return null;
+
+    const candidates = Array.from(appMount.querySelectorAll<HTMLElement>('[class*="chat_"]'))
+        .filter(element => {
+            if (element.closest(".gm-gallery-overlay-container")) return false;
+            const rect = element.getBoundingClientRect();
+            // Prefer the main chat container, not a tiny nested bit of chat chrome.
+            return rect.width >= 420 && rect.height >= 360;
+        })
+        .sort((a, b) => {
+            const ar = a.getBoundingClientRect();
+            const br = b.getBoundingClientRect();
+            return (br.width * br.height) - (ar.width * ar.height);
+        });
+
+    return candidates[0] || null;
+}
 
 /**
  * Opt-in tracing for session restore / refetch decisions. Enable from the console with:
@@ -321,12 +350,10 @@ function mergeSessionState(
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
     const {
         cardChrome, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
-        dockWidth, galleryStyle, layout, nsfw, performanceProfile, rememberSessions,
-        viewMode, hideBotPosts
+        layout, nsfw, performanceProfile, rememberSessions, viewMode, hideBotPosts
     } = settings.use([
         "cardChrome", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
-        "dockWidth", "galleryStyle", "layout", "nsfw", "performanceProfile", "rememberSessions",
-        "viewMode", "hideBotPosts"
+        "layout", "nsfw", "performanceProfile", "rememberSessions", "viewMode", "hideBotPosts"
     ]);
 
     /**
@@ -339,8 +366,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const lite = effectiveProfile === "lightweight";
     const motion: string = lite ? "off" : effectiveProfile === "pretty" ? "full" : "subtle";
     const effectiveViewMode = (viewMode || "overlay") as "overlay" | "dockRight" | "dockLeft";
-    const effectiveDockWidth = dockWidth || "520px";
-    const effectiveStyle = (galleryStyle || "glass") as "glass" | "solid" | "native";
+    const isDocked = effectiveViewMode === "dockRight" || effectiveViewMode === "dockLeft";
     const effectiveCardChrome = (cardChrome || "full") as "full" | "compact" | "minimal";
     const prefetchEnabled = !lite;
     const skeletonsEnabled = !lite;
@@ -453,8 +479,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
     const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
-    const [showQuickSettings, setShowQuickSettings] = useState<boolean>(false);
     const [isScrolling, setIsScrolling] = useState<boolean>(false);
+    const [dockWidth, setDockWidth] = useState<number>(() => readSavedDockWidth());
 
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -462,8 +488,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const channelSelectRef = useRef<HTMLDivElement>(null);
     const threadSelectRef = useRef<HTMLDivElement>(null);
     const authorInputRef = useRef<HTMLDivElement>(null);
-    const quickSettingsRef = useRef<HTMLDivElement>(null);
     const scrollingTimerRef = useRef<number | null>(null);
+    const dockReservationRef = useRef<HTMLElement | null>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const lastAutoLoadRef = useRef<number>(0);
@@ -1177,17 +1203,72 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     }, []);
 
     useEffect(() => {
-        if (!showQuickSettings) return;
+        const handleResize = () => setDockWidth(width => clampDockWidth(width));
+        window.addEventListener("resize", handleResize);
+        return () => window.removeEventListener("resize", handleResize);
+    }, []);
 
-        const handlePointerDown = (event: MouseEvent) => {
-            const target = event.target as Node | null;
-            if (target && quickSettingsRef.current?.contains(target)) return;
-            setShowQuickSettings(false);
+    useEffect(() => {
+        if (!isDocked) return;
+
+        const root = document.documentElement;
+        const side = effectiveViewMode === "dockRight" ? "right" : "left";
+        root.classList.add("gm-dock-active", `gm-dock-active-${side}`);
+
+        // Best-effort "embedded" dock: reserve room inside Discord's chat layout if a plausible
+        // chat container can be identified. Discord's internal class names change often, so
+        // failure must be harmless — the fixed dock still works, it just overlays instead of
+        // shrinking the channel. This probe intentionally runs on mode changes, not every drag
+        // frame; dragging updates only the CSS variable below.
+        const target = findDockReservationTarget();
+        if (target) {
+            target.classList.add("gm-discord-reserved-for-gallery");
+            dockReservationRef.current = target;
+        }
+
+        return () => {
+            root.classList.remove("gm-dock-active", "gm-dock-active-left", "gm-dock-active-right");
+            root.style.removeProperty("--gm-active-dock-width");
+            dockReservationRef.current?.classList.remove("gm-discord-reserved-for-gallery");
+            dockReservationRef.current = null;
+        };
+    }, [effectiveViewMode, isDocked]);
+
+    useEffect(() => {
+        if (!isDocked) return;
+        document.documentElement.style.setProperty("--gm-active-dock-width", `${dockWidth}px`);
+    }, [dockWidth, isDocked]);
+
+    const startDockResize = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!isDocked) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startX = e.clientX;
+        const startWidth = dockWidth;
+        const direction = effectiveViewMode;
+        let latestWidth = startWidth;
+
+        document.body.classList.add("gm-resizing-dock");
+
+        const handleMove = (event: MouseEvent) => {
+            const delta = direction === "dockRight"
+                ? startX - event.clientX
+                : event.clientX - startX;
+            latestWidth = clampDockWidth(startWidth + delta);
+            setDockWidth(latestWidth);
         };
 
-        document.addEventListener("mousedown", handlePointerDown, true);
-        return () => document.removeEventListener("mousedown", handlePointerDown, true);
-    }, [showQuickSettings]);
+        const finish = () => {
+            document.body.classList.remove("gm-resizing-dock");
+            window.removeEventListener("mousemove", handleMove);
+            window.removeEventListener("mouseup", finish);
+            saveDockWidth(latestWidth);
+        };
+
+        window.addEventListener("mousemove", handleMove);
+        window.addEventListener("mouseup", finish, { once: true });
+    };
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -1637,10 +1718,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             setAuthorMenuDismissed(true);
             return;
         }
-        if (showQuickSettings) {
-            setShowQuickSettings(false);
-            return;
-        }
         onClose?.();
     };
 
@@ -1689,8 +1766,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const viewContent = (
         <div
-            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone} gm-view-${effectiveViewMode} gm-style-${effectiveStyle} gm-chrome-${effectiveCardChrome}${lite ? " gm-lite" : ""}${isScrolling ? " gm-is-scrolling" : ""}`}
-            style={{ "--gm-dock-width": effectiveDockWidth } as React.CSSProperties}
+            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone} gm-view-${effectiveViewMode} gm-chrome-${effectiveCardChrome}${lite ? " gm-lite" : ""}${isScrolling ? " gm-is-scrolling" : ""}`}
+            style={{ "--gm-dock-width": `${dockWidth}px` } as React.CSSProperties}
             ref={containerRef}
             tabIndex={-1}
             role="dialog"
@@ -1698,6 +1775,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             onKeyDown={handleGalleryKeyDown}
             onMouseDown={keepFocusInsideGallery}
         >
+            {isDocked && (
+                <div
+                    className="gm-dock-resize-handle"
+                    onMouseDown={startDockResize}
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="Drag to resize the docked gallery"
+                />
+            )}
             <div className="gm-gallery-header">
                 <div className="gm-header-row">
                     <div className="gm-header-left">
@@ -1953,88 +2039,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <GmIcon name="reset" size={15} />
                         </button>
 
-                        <div className="gm-quick-settings-wrap" ref={quickSettingsRef}>
-                            <button
-                                className={`gm-icon-btn ${showQuickSettings ? "active" : ""}`}
-                                onClick={() => setShowQuickSettings(open => !open)}
-                                title="Quick gallery settings"
-                                aria-label="Quick gallery settings"
-                                aria-haspopup="menu"
-                                aria-expanded={showQuickSettings}
-                            >
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                                    <path d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.48.48 0 0 0 .12-.61l-1.92-3.32a.48.48 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.73 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94 0 .31.02.63.06.94l-2.03 1.58a.48.48 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z" />
-                                </svg>
-                            </button>
-
-                            {showQuickSettings && (
-                                <div className="gm-quick-settings-popover" role="menu" aria-label="Quick gallery settings">
-                                    <div className="gm-quick-settings-header">
-                                        <div>
-                                            <div className="gm-quick-title">Gallery setup</div>
-                                            <div className="gm-quick-subtitle">The common controls, without digging through Vencord settings.</div>
-                                        </div>
-                                    </div>
-
-                                    <div className="gm-quick-section">
-                                        <div className="gm-quick-label">Window</div>
-                                        <div className="gm-quick-grid gm-quick-grid-3">
-                                            {QUICK_VIEW_OPTIONS.map(option => (
-                                                <button
-                                                    key={option.value}
-                                                    className={`gm-quick-choice ${effectiveViewMode === option.value ? "active" : ""}`}
-                                                    onClick={() => writeSetting("viewMode", option.value)}
-                                                >
-                                                    <span>{option.label}</span>
-                                                    <small>{option.hint}</small>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="gm-quick-section">
-                                        <div className="gm-quick-label">Experience</div>
-                                        <div className="gm-quick-grid gm-quick-grid-3">
-                                            {QUICK_PROFILE_OPTIONS.map(option => (
-                                                <button
-                                                    key={option.value}
-                                                    className={`gm-quick-choice ${effectiveProfile === option.value ? "active" : ""}`}
-                                                    onClick={() => writeSetting("performanceProfile", option.value)}
-                                                >
-                                                    <span>{option.label}</span>
-                                                    <small>{option.hint}</small>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <div className="gm-quick-section">
-                                        <div className="gm-quick-label">Style</div>
-                                        <div className="gm-quick-grid gm-quick-grid-3">
-                                            {QUICK_STYLE_OPTIONS.map(option => (
-                                                <button
-                                                    key={option.value}
-                                                    className={`gm-quick-choice ${effectiveStyle === option.value ? "active" : ""}`}
-                                                    onClick={() => writeSetting("galleryStyle", option.value)}
-                                                >
-                                                    <span>{option.label}</span>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <button
-                                        className="gm-quick-settings-link"
-                                        onClick={() => {
-                                            setShowQuickSettings(false);
-                                            openGallerySettings();
-                                        }}
-                                    >
-                                        Open all GalleryMode settings
-                                    </button>
-                                </div>
-                            )}
-                        </div>
+                        <button
+                            className="gm-icon-btn"
+                            onClick={openGallerySettings}
+                            title="Open GalleryMode plugin settings"
+                            aria-label="Open GalleryMode plugin settings"
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                <path d="M19.14 12.94a7.6 7.6 0 0 0 .06-.94 7.6 7.6 0 0 0-.06-.94l2.03-1.58a.48.48 0 0 0 .12-.61l-1.92-3.32a.48.48 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.73 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94 0 .31.02.63.06.94l-2.03 1.58a.48.48 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.04.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.03-1.58ZM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2Z" />
+                            </svg>
+                        </button>
 
                         {!!onClose && (
                             <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)" aria-label="Exit Gallery Mode">
