@@ -2105,7 +2105,10 @@ video.gm-modal-media {
 }
 
 .gm-gallery-overlay-container.gm-view-dockLeft {
-    left: 12px;
+    /* In embedded mode this is the measured left edge of Discord's chat pane, so the dock sits
+       between the server/channel sidebars and chat. Falls back to the window edge if Discord's
+       layout cannot be identified safely. */
+    left: var(--gm-dock-left-x, 12px);
     right: auto;
 }
 

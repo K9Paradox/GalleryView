@@ -879,24 +879,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
      * Must run before NavigationRouter.transitionTo(): that changes the selected channel, which
      * re-keys the session, so a save afterwards would be filed under the destination channel.
      */
-    const handleBeforeJump = React.useCallback(() => {
-        // Freeze this gallery's identity for the rest of its life.
-        //
-        // transitionTo() changes the selected channel while the overlay is still mounted, and
-        // React flushes that store update before the unmount. Without pinning, sessionKey would
-        // flip to the destination and three separate effects would fire in order:
-        //   1. the session-swap effect re-saves the old key with scrollTop 0, then hydrates the
-        //      destination channel's (empty) session over our state,
-        //   2. the state-change effect saves that emptied state,
-        //   3. the unmount cleanup saves it again.
-        // The good snapshot taken here would be overwritten before the user ever reopened.
-        // Pinning keeps sessionKey stable so all of those become no-ops against the same key.
+    const handleBeforeJump = React.useCallback((willCloseGallery = true) => {
+        // Freeze this gallery's identity before NavigationRouter.transitionTo() changes Discord's
+        // selected channel. In fullscreen mode the gallery immediately unmounts, so we also mark a
+        // one-shot resume session and seal writes during teardown. In docked mode the gallery stays
+        // mounted beside chat; sealing would make the live gallery act like it was already gone, and
+        // the channel change would otherwise reset its search/scroll state.
         jumpPinnedRef.current = true;
         setPinnedKey(sessionKey);
 
         persistSession(sessionKey, lastScrollTopRef.current, { force: true });
-        CacheService.markResumeSession(sessionKey);
-        sessionSealedRef.current = true;
+
+        if (willCloseGallery) {
+            CacheService.markResumeSession(sessionKey);
+            sessionSealedRef.current = true;
+        }
     }, [persistSession, sessionKey]);
 
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
@@ -1246,26 +1243,53 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         const root = document.documentElement;
         const side = effectiveViewMode === "dockRight" ? "right" : "left";
-        root.classList.add("gm-dock-active", `gm-dock-active-${side}`);
+        let frame = 0;
+        let settleTimer = 0;
 
-        // Best-effort "embedded" dock: reserve room inside Discord's chat layout if a plausible
-        // chat container can be identified. Discord's internal class names change often, so
-        // failure must be harmless — the fixed dock still works, it just overlays instead of
-        // shrinking the channel. This probe intentionally runs on mode changes, not every drag
-        // frame; dragging updates only the CSS variable below.
-        const target = findDockReservationTarget();
-        if (target) {
-            target.classList.add("gm-discord-reserved-for-gallery");
-            dockReservationRef.current = target;
-        }
-
-        return () => {
-            root.classList.remove("gm-dock-active", "gm-dock-active-left", "gm-dock-active-right");
-            root.style.removeProperty("--gm-active-dock-width");
+        const clearReservation = () => {
             dockReservationRef.current?.classList.remove("gm-discord-reserved-for-gallery");
             dockReservationRef.current = null;
         };
-    }, [effectiveViewMode, isDocked]);
+
+        const syncDockReservation = () => {
+            clearReservation();
+
+            // Measure the chat before adding the margin reservation. For left dock this is what
+            // lets the panel sit between Discord's sidebars and chat instead of covering server /
+            // channel navigation.
+            const target = findDockReservationTarget();
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                if (side === "left") {
+                    root.style.setProperty("--gm-dock-left-x", `${Math.max(8, Math.round(rect.left))}px`);
+                } else {
+                    root.style.removeProperty("--gm-dock-left-x");
+                }
+                target.classList.add("gm-discord-reserved-for-gallery");
+                dockReservationRef.current = target;
+            } else {
+                root.style.removeProperty("--gm-dock-left-x");
+            }
+        };
+
+        root.classList.add("gm-dock-active", `gm-dock-active-${side}`);
+        syncDockReservation();
+        // Discord often finishes moving channel/member columns one frame after route changes.
+        // A second pass avoids the "dock is wrong until reopen" glitch without polling forever.
+        frame = requestAnimationFrame(syncDockReservation);
+        settleTimer = window.setTimeout(syncDockReservation, 250);
+        window.addEventListener("resize", syncDockReservation);
+
+        return () => {
+            if (frame) cancelAnimationFrame(frame);
+            if (settleTimer) clearTimeout(settleTimer);
+            window.removeEventListener("resize", syncDockReservation);
+            root.classList.remove("gm-dock-active", "gm-dock-active-left", "gm-dock-active-right");
+            root.style.removeProperty("--gm-active-dock-width");
+            root.style.removeProperty("--gm-dock-left-x");
+            clearReservation();
+        };
+    }, [effectiveViewMode, isDocked, liveSessionKey]);
 
     useEffect(() => {
         if (!isDocked) return;
@@ -1606,11 +1630,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Signature of everything that genuinely defines "which search is this". A reset is only
     // correct when this actually changes; comparing it explicitly is far more robust than
     // relying on a one-shot flag, which any stray dependency change could burn through.
+    const searchTargetSignature = pinnedKey ?? `${channelId ?? ""}_${guildId ?? ""}`;
+    const liveThreadIdsSignature = pinnedKey ? "pinned" : threadChannelIdsKey;
     const searchSignature = [
-        channelId ?? "", guildId ?? "", scope, filterType, activeQuery,
+        searchTargetSignature, scope, filterType, activeQuery,
         beforeDate, afterDate, sortOrder, String(nsfw), String(hideBotPosts === true),
         selectedChannelIdsKey, selectedThreadIdsKey, selectedTypesKey,
-        selectedAuthorsKey, threadChannelIdsKey
+        selectedAuthorsKey, liveThreadIdsSignature
     ].join("|");
 
     const lastSearchSignatureRef = useRef<string>(searchSignature);
@@ -2230,7 +2256,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     key={item.id}
                                     item={item}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={handleBeforeJump}
+                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
                                     closeOnJump={!isDocked}
                                     previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
@@ -2251,7 +2277,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     key={item.id}
                                     item={item}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={handleBeforeJump}
+                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
                                     closeOnJump={!isDocked}
                                     previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
