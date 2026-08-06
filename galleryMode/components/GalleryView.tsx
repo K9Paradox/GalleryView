@@ -341,6 +341,11 @@ function createDefaultSessionState(initialQuery: string, defaults: SessionDefaul
     };
 }
 
+function splitSessionKey(key: string): { channelId: string; guildId: string; } {
+    const [channelId = "nochan", guildId = "noguild"] = key.split("_");
+    return { channelId, guildId };
+}
+
 function mergeSessionState(
     session: GallerySessionState | null,
     initialQuery: string,
@@ -787,12 +792,35 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     // Drop the resume pin as soon as the user navigates somewhere new with the gallery open;
     // from then on the gallery tracks the selected channel again, as it does normally.
+    //
+    // Exception: docked Jump-to-message intentionally pins the gallery while chat navigates within
+    // the same server. That pin must *not* survive a real server switch though, or the dock keeps
+    // showing the previous guild's media. DMs are treated like their own "server" by requiring the
+    // channel id to match when both keys have no guild.
     const mountedLiveKeyRef = useRef<string>(liveSessionKey);
     useEffect(() => {
         if (liveSessionKey === mountedLiveKeyRef.current) return;
         mountedLiveKeyRef.current = liveSessionKey;
-        // A jump deliberately navigates away; that must not clear the pin it just set.
-        if (jumpPinnedRef.current) return;
+
+        if (jumpPinnedRef.current) {
+            const pinned = pinnedKeyRef.current;
+            if (pinned) {
+                const pinnedParts = splitSessionKey(pinned);
+                const liveParts = splitSessionKey(liveSessionKey);
+                const crossedServer = pinnedParts.guildId !== liveParts.guildId;
+                const crossedDm = pinnedParts.guildId === "noguild"
+                    && liveParts.guildId === "noguild"
+                    && pinnedParts.channelId !== liveParts.channelId;
+
+                if (!crossedServer && !crossedDm) return;
+            }
+
+            jumpPinnedRef.current = false;
+            sessionSealedRef.current = false;
+            setPinnedKey(null);
+            return;
+        }
+
         setPinnedKey(null);
     }, [liveSessionKey]);
 
