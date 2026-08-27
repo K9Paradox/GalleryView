@@ -174,6 +174,22 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     const src = firstSafeMediaUrl(item.proxyUrl, item.url);
     const title = item.filename || item.embedTitle || "Media Preview";
 
+    React.useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            const key = e.key.toLowerCase();
+            if (key === "c" && !e.altKey) {
+                copyWithToast(item.url, "Copied media link!");
+            } else if (key === "d" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                downloadMedia(item.url, item.filename || "media");
+            } else if (key === "o" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                openExternal(item.url);
+            }
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [item]);
+
     return (
         <ModalRoot {...modalProps} size={ModalSize.DYNAMIC} className="gm-modal-root">
             <ModalHeader className="gm-modal-header">
