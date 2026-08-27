@@ -2209,19 +2209,23 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                                 </button>
                                                             </div>
 
-                                                            {!collapsed && category.threads.map((thread: any) => (
-                                                                <label
-                                                                    key={thread.id}
-                                                                    className="gm-channel-option gm-thread-option"
-                                                                >
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={selectedThreadIds.includes(thread.id)}
-                                                                        onChange={() => toggleThreadSelection(thread.id)}
-                                                                    />
-                                                                    <span>{thread.name}</span>
-                                                                </label>
-                                                            ))}
+                                                            <div className={`gm-category-body${collapsed ? " collapsed" : ""}`}>
+                                                                <div className="gm-category-body-inner">
+                                                                    {category.threads.map((thread: any) => (
+                                                                        <label
+                                                                            key={thread.id}
+                                                                            className="gm-channel-option gm-thread-option"
+                                                                        >
+                                                                            <input
+                                                                                type="checkbox"
+                                                                                checked={selectedThreadIds.includes(thread.id)}
+                                                                                onChange={() => toggleThreadSelection(thread.id)}
+                                                                            />
+                                                                            <span>{thread.name}</span>
+                                                                        </label>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                     );
                                                 })}
@@ -2295,22 +2299,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                                 </button>
                                                             </div>
 
-                                                            {!collapsed && category.channels.map((channel: any) => {
-                                                                const thread = THREAD_CHANNEL_TYPES.has(channel.type);
-                                                                return (
-                                                                    <label
-                                                                        key={channel.id}
-                                                                        className={`gm-channel-option${thread ? " gm-thread-option" : ""}`}
-                                                                    >
-                                                                        <input
-                                                                            type="checkbox"
-                                                                            checked={effectiveSelectedChannelIds.includes(channel.id)}
-                                                                            onChange={() => toggleChannelSelection(channel.id)}
-                                                                        />
-                                                                        <span>{thread ? channel.name : `#${channel.name}`}</span>
-                                                                    </label>
-                                                                );
-                                                            })}
+                                                            <div className={`gm-category-body${collapsed ? " collapsed" : ""}`}>
+                                                                <div className="gm-category-body-inner">
+                                                                    {category.channels.map((channel: any) => {
+                                                                        const thread = THREAD_CHANNEL_TYPES.has(channel.type);
+                                                                        return (
+                                                                            <label
+                                                                                key={channel.id}
+                                                                                className={`gm-channel-option${thread ? " gm-thread-option" : ""}`}
+                                                                            >
+                                                                                <input
+                                                                                    type="checkbox"
+                                                                                    checked={effectiveSelectedChannelIds.includes(channel.id)}
+                                                                                    onChange={() => toggleChannelSelection(channel.id)}
+                                                                                />
+                                                                                <span>{thread ? channel.name : `#${channel.name}`}</span>
+                                                                            </label>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            </div>
                                                         </div>
                                                     );
                                                 })}
