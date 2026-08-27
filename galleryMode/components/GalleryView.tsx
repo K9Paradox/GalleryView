@@ -21,7 +21,7 @@ import { SearchService } from "../services/searchService";
 import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
 import { MasonryGrid } from "./MasonryGrid";
-import { SkeletonGrid } from "./SkeletonCard";
+import { SkeletonGrid, SkeletonCard } from "./SkeletonCard";
 import { DENSITY_RECTS, ICON_PATHS } from "./iconData";
 
 interface GalleryViewProps {
@@ -2580,7 +2580,16 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             )}
-                            trailing={showSkeletons ? <SkeletonGrid count={skeletonCount} ratios={recentRatios} /> : null}
+                            trailingCount={showSkeletons ? skeletonCount : 0}
+                            trailingRatios={recentRatios}
+                            renderTrailing={(index, ratio) => (
+                                <SkeletonCard
+                                    key={`skeleton-${index}`}
+                                    index={index}
+                                    ratio={ratio}
+                                    showAuthorFooter={cardChrome === "full" || !cardChrome}
+                                />
+                            )}
                         />
                     ) : (
                         <div

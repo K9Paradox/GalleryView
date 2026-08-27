@@ -174,6 +174,24 @@
     color: var(--gm-text-strong) !important;
     font-family: var(--font-primary, "gg sans", "Noto Sans", sans-serif);
     animation: gmFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    /* Smooth transitions for docking, undocking, and switching sides */
+    transition: top 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                bottom 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                left 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                right 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                border-radius 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Disable transitions during drag-to-resize to maintain perfect cursor tracking */
+body.gm-resizing-dock .gm-gallery-overlay-container {
+    transition: none !important;
+}
+
+/* Honor user performance preferences by disabling transitions in lightweight mode */
+.gm-motion-off.gm-gallery-overlay-container {
+    transition: none !important;
 }
 
 @keyframes gmFadeIn {
@@ -689,6 +707,13 @@
     align-items: center;
     justify-content: center;
     background: var(--gm-fill-faint);
+    transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+
+.gm-media-skeleton.loaded {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .gm-spinner-icon {

@@ -525,11 +525,9 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                     </div>
                 ) : item.type === "video" && videoSrc ? (
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                        {!mediaLoaded && (
-                            <div className="gm-media-skeleton">
-                                <div className="gm-spinner-icon" />
-                            </div>
-                        )}
+                        <div className={`gm-media-skeleton ${mediaLoaded ? "loaded" : ""}`}>
+                            <div className="gm-spinner-icon" />
+                        </div>
                         <video
                             ref={videoRef}
                             src={videoSrc}
@@ -559,11 +557,9 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                     </div>
                 ) : (
                     <>
-                        {!mediaLoaded && (
-                            <div className="gm-media-skeleton">
-                                <div className="gm-spinner-icon" />
-                            </div>
-                        )}
+                        <div className={`gm-media-skeleton ${mediaLoaded ? "loaded" : ""}`}>
+                            <div className="gm-spinner-icon" />
+                        </div>
                         {/* `loading="lazy"` is back, but the two things that previously broke it
                             are gone: the blur filter no longer sits on every image, and cards are
                             no longer each promoted to their own compositor layer. Without lazy,
