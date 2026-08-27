@@ -201,9 +201,20 @@
 .gm-header-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    /* flex-start (not space-between): once the row wraps, space-between stretches the leftover
+       groups to the edges, which visually scrambles the control order. Groups pack left and the
+       action cluster pins itself right via margin-left:auto. */
+    justify-content: flex-start;
     gap: 12px;
+    row-gap: 10px;
     flex-wrap: wrap;
+}
+
+.gm-header-row > * {
+    /* Flex children default to min-width:auto, which lets long content (channel names, pill
+       counts) refuse to shrink and push neighbouring controls outside the overlay when the UI
+       is scaled up. Allowing shrink keeps every control inside the header at any zoom. */
+    min-width: 0;
 }
 
 /* Title & Badge */
@@ -324,7 +335,9 @@
 .gm-search-input {
     width: 100%;
     height: 38px;
-    padding: 0 42px 0 14px;
+    /* Room on the right for the clear (×) button AND the icon submit button — previously only
+       the text "Search" button was accounted for, so typed text ran underneath the buttons. */
+    padding: 0 70px 0 14px;
     background: var(--gm-input-bg) !important;
     border: 1px solid var(--gm-line-strong) !important;
     border-radius: 8px;
@@ -348,13 +361,15 @@
     position: absolute;
     right: 4px;
     height: 30px;
-    padding: 0 10px;
+    width: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: var(--brand-experiment, #5865f2) !important;
     color: var(--gm-text-strong) !important;
     border: none;
     border-radius: 6px;
-    font-size: 12px;
-    font-weight: 700;
     cursor: pointer;
     transition: opacity 0.15s ease;
 }
@@ -400,7 +415,10 @@
 .gm-gallery-content {
     flex: 1;
     overflow-y: auto;
-    padding: 24px;
+    overflow-x: hidden;
+    /* Fluid padding: full density on wide windows, shrinking proportionally as the window (or
+       zoomed layout viewport) narrows instead of jumping between media-query steps. */
+    padding: clamp(12px, 2vw, 24px);
     scroll-behavior: smooth;
     background: transparent !important;
 }
@@ -418,10 +436,22 @@
     border-radius: 4px;
 }
 
-/* Responsive Dynamic Grid Layout */
+/* Responsive Dynamic Grid Layout.
+
+   The minmax() floor is clamped to 100% of the container, at every viewport size. The bare
+   `minmax(var(--gm-card-min-width), 1fr)` form worked fine on wide windows, but a window narrower
+   than the chosen card width (small window, Discord UI zoom, split-screen) produced an exactly
+   one-column layout that overflowed the container horizontally and broke the whole overlay's
+   alignment. It was previously patched only under 640px; the bug existed above that too. */
 .gm-media-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--gm-card-min-width, 240px), 1fr));
+    /*
+     * Full overlay mode should always spend the available row width: smaller density means more
+     * columns, and the columns share leftover space instead of leaving centered dead gutters.
+     * Docked mode overrides this to an explicit column count derived from the current dock width.
+     */
+    grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
+    justify-content: stretch;
     gap: 16px;
 }
 
@@ -840,7 +870,9 @@
     top: calc(100% + 6px);
     left: 0;
     width: 280px;
-    max-height: 320px;
+    /* Capped against the viewport, not a fixed pixel count: a 320px dropdown in a 480px-tall
+       (or heavily zoomed) window ran straight out of the overlay. */
+    max-height: min(320px, 50vh);
     overflow-y: auto;
     background: var(--gm-surface-overlay) !important;
     border: 1px solid var(--gm-line-strong) !important;
@@ -932,7 +964,7 @@
 
 .gm-search-clear-btn {
     position: absolute;
-    right: 66px;
+    right: 38px;
     width: 28px;
     height: 28px;
     border: none;
@@ -1140,6 +1172,13 @@ video.gm-modal-media {
     display: flex;
     align-items: center;
     gap: 6px;
+    max-width: 100%;
+}
+
+/* Date inputs have an intrinsic width that refuses to shrink; capping them keeps the sort
+   button reachable at high UI scale instead of pushing it off the row. */
+.gm-date-input {
+    max-width: 100%;
 }
 
 .gm-date-separator {
@@ -1348,6 +1387,7 @@ video.gm-modal-media {
 /* Actions (Reset / settings / close) stay glued together at the right edge and never wrap
    apart from each other, so the close button is always where the user expects it. */
 .gm-header-actions {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1376,14 +1416,45 @@ video.gm-modal-media {
     transition: background 0.15s ease, color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.gm-icon-btn:hover {
-    background: var(--gm-line-strong) !important;
-    color: var(--gm-text-strong) !important;
+/* Icon-only scoped/tab buttons: the SVG is the label, so padding stays symmetric and the svg
+   gets no baseline gap. Meaningful names live on the buttons' title/aria-label. */
+.gm-scope-btn.gm-icon-only,
+.gm-tab-btn.gm-icon-only {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 9px;
 }
 
-.gm-motion-full .gm-icon-btn:hover svg {
-    transform: rotate(45deg);
-    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+.gm-scope-btn.gm-icon-only svg,
+.gm-tab-btn.gm-icon-only svg,
+.gm-channel-select-btn svg,
+.gm-action-btn.gm-action-icon svg {
+    display: block;
+    flex-shrink: 0;
+}
+
+.gm-channel-select-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.gm-action-btn.gm-action-icon {
+    padding: 6px 9px;
+    line-height: 0;
+}
+
+.gm-author-pill {
+    cursor: pointer;
+}
+
+.gm-icon-btn:hover,
+.gm-icon-btn.active {
+    background: var(--gm-line-strong) !important;
+    color: var(--gm-text-strong) !important;
 }
 
 .gm-icon-btn svg,
@@ -1414,11 +1485,11 @@ video.gm-modal-media {
 }
 
 /* Reserve a stable slot so the header never reflows as the count changes. Without this,
-   "12 loaded" -> "1,204 loaded of 8,431" resizes the badge and visibly shifts every control
-   to its right each time the filter changes. */
+   "12" -> "1,204 / 8,431" resizes the badge and visibly shifts every control to its right
+   each time the filter changes. */
 .gm-count-badge {
     white-space: nowrap;
-    min-width: 15ch;
+    min-width: 9ch;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" 1;
 }
@@ -1520,10 +1591,6 @@ video.gm-modal-media {
         gap: 10px;
     }
 
-    .gm-gallery-content {
-        padding: 12px;
-    }
-
     .gm-plugin-title {
         font-size: 17px;
     }
@@ -1607,11 +1674,6 @@ video.gm-modal-media {
 
     .gm-media-grid {
         gap: 10px;
-    }
-
-    /* Never let the density setting produce a single sliver of a column on a narrow window. */
-    .gm-media-grid:not(.gm-masonry) {
-        grid-template-columns: repeat(auto-fill, minmax(min(var(--gm-card-min-width, 240px), 100%), 1fr));
     }
 
     .gm-media-grid.gm-masonry,
@@ -1969,4 +2031,259 @@ video.gm-modal-media {
 .gm-resumed-pill:hover {
     background: var(--gm-accent) !important;
     color: #fff !important;
+}
+
+/* ==========================================================================
+   Lightweight mode
+   --------------------------------------------------------------------------
+   Applied via .gm-lite on the overlay (driven by the Low-end experience preset). Motion is
+   separately forced to the "off" tier, so nothing here deals with animation — this strips
+   the remaining costs the motion tiers don't control:
+
+   - backdrop-filter blur/saturate (the single most expensive decorative effect: a full-screen
+     28px blur runs every frame the content behind it scrolls)
+   - translucent surfaces (without backdrop blur they would show smeared content beneath, so
+     the overlay goes opaque)
+   - drop shadows and the smooth-scroll spring
+   ========================================================================== */
+
+.gm-gallery-overlay-container.gm-lite {
+    background: var(--background-tertiary, #1e1f22) !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.gm-lite .gm-type-badge,
+.gm-lite .gm-card-date-badge-bottom-right,
+.gm-lite .gm-action-btn {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.gm-lite .gm-spoiler-veil {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: rgba(12, 13, 16, 0.88);
+}
+
+/* The channel thread dropdowns are blurred via the box-shadow only; nothing to strip there. */
+
+.gm-lite .gm-gallery-content {
+    scroll-behavior: auto;
+}
+
+.gm-lite .gm-media-card {
+    transition: border-color 0.15s ease;
+}
+
+.gm-lite .gm-media-card:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+.gm-lite .gm-media-grid.gm-masonry .gm-media-card {
+    /* Masonry already avoids layout containment tricks; keep paint containment in lite too. */
+    contain: paint style;
+}
+
+/* --- Docked / split-screen window mode ----------------------------------- */
+
+.gm-gallery-overlay-container.gm-view-dockRight,
+.gm-gallery-overlay-container.gm-view-dockLeft {
+    top: 12px;
+    bottom: 12px;
+    width: min(var(--gm-dock-width, 520px), calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    border-radius: 14px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.62), 0 0 0 1px var(--gm-line-softer);
+}
+
+.gm-gallery-overlay-container.gm-view-dockRight {
+    left: auto;
+    right: 12px;
+}
+
+.gm-gallery-overlay-container.gm-view-dockLeft {
+    /* In embedded mode this is the measured left edge of Discord's chat pane, so the dock sits
+       between the server/channel sidebars and chat. Falls back to the window edge if Discord's
+       layout cannot be identified safely. */
+    left: var(--gm-dock-left-x, 12px);
+    right: auto;
+}
+
+/* Reserve room for the fixed dock inside Discord's own chat column when we can identify it.
+   This is intentionally applied to a runtime class instead of broad Discord selectors: if the
+   class probe fails on a future Discord build, the dock remains usable and simply overlays. */
+.gm-discord-reserved-for-gallery {
+    transition: margin 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    min-width: 0 !important;
+}
+
+html.gm-dock-active-right .gm-discord-reserved-for-gallery {
+    margin-right: calc(var(--gm-active-dock-width, 520px) + 18px) !important;
+}
+
+html.gm-dock-active-left .gm-discord-reserved-for-gallery {
+    margin-left: calc(var(--gm-active-dock-width, 520px) + 18px) !important;
+}
+
+.gm-view-dockRight .gm-gallery-header,
+.gm-view-dockLeft .gm-gallery-header {
+    padding: 12px;
+    gap: 10px;
+}
+
+.gm-view-dockRight .gm-plugin-title-text,
+.gm-view-dockLeft .gm-plugin-title-text {
+    display: none;
+}
+
+.gm-view-dockRight .gm-header-left,
+.gm-view-dockLeft .gm-header-left {
+    flex-basis: 100%;
+}
+
+.gm-view-dockRight .gm-channel-pill,
+.gm-view-dockLeft .gm-channel-pill {
+    max-width: min(100%, 26ch);
+}
+
+.gm-view-dockRight .gm-count-badge,
+.gm-view-dockLeft .gm-count-badge {
+    min-width: 0;
+}
+
+.gm-view-dockRight .gm-header-controls,
+.gm-view-dockLeft .gm-header-controls,
+.gm-view-dockRight .gm-header-right,
+.gm-view-dockLeft .gm-header-right {
+    width: 100%;
+}
+
+.gm-view-dockRight .gm-media-grid:not(.gm-masonry),
+.gm-view-dockLeft .gm-media-grid:not(.gm-masonry) {
+    grid-template-columns: repeat(var(--gm-grid-columns, 2), minmax(0, 1fr));
+    justify-content: stretch;
+}
+
+.gm-view-dockRight .gm-gallery-content,
+.gm-view-dockLeft .gm-gallery-content {
+    padding: 10px;
+}
+
+.gm-view-dockRight .gm-header-row-search,
+.gm-view-dockLeft .gm-header-row-search {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.gm-view-dockRight .gm-author-search-wrap,
+.gm-view-dockLeft .gm-author-search-wrap,
+.gm-view-dockRight .gm-search-form,
+.gm-view-dockLeft .gm-search-form,
+.gm-view-dockRight .gm-date-range-wrap,
+.gm-view-dockLeft .gm-date-range-wrap {
+    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+}
+
+.gm-view-dockRight .gm-author-input-wrap,
+.gm-view-dockLeft .gm-author-input-wrap {
+    flex: 1 1 160px;
+    min-width: 0;
+}
+
+.gm-view-dockRight .gm-date-range-wrap,
+.gm-view-dockLeft .gm-date-range-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.gm-view-dockRight .gm-sort-btn,
+.gm-view-dockLeft .gm-sort-btn {
+    align-self: flex-start;
+}
+
+.gm-window-toggle {
+    margin-left: 0;
+}
+
+.gm-dock-resize-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 12px;
+    z-index: 1600;
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.gm-view-dockRight .gm-dock-resize-handle {
+    left: -6px;
+}
+
+.gm-view-dockLeft .gm-dock-resize-handle {
+    right: -6px;
+}
+
+.gm-dock-resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 3px;
+    height: 54px;
+    border-radius: 999px;
+    transform: translate(-50%, -50%);
+    background: var(--gm-line-strong);
+    opacity: 0;
+    transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.gm-dock-resize-handle:hover::after,
+body.gm-resizing-dock .gm-dock-resize-handle::after {
+    opacity: 1;
+    background: var(--brand-experiment, #5865f2);
+}
+
+body.gm-resizing-dock,
+body.gm-resizing-dock * {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+
+.gm-is-scrolling .gm-media-card,
+.gm-is-scrolling .gm-media-element,
+.gm-is-scrolling .gm-card-actions-overlay,
+.gm-is-scrolling .gm-card-footer {
+    transition-duration: 0.01ms !important;
+}
+
+.gm-is-scrolling .gm-media-card:hover,
+.gm-is-scrolling .gm-media-card:hover .gm-media-element {
+    transform: none !important;
+}
+
+@media (max-width: 820px) {
+    .gm-gallery-overlay-container.gm-view-dockRight,
+    .gm-gallery-overlay-container.gm-view-dockLeft {
+        left: 8px;
+        right: 8px;
+        width: auto;
+        max-width: none;
+    }
+
+    .gm-dock-resize-handle {
+        display: none;
+    }
+
+    html.gm-dock-active-right .gm-discord-reserved-for-gallery,
+    html.gm-dock-active-left .gm-discord-reserved-for-gallery {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
 }

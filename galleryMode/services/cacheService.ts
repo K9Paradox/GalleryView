@@ -62,12 +62,14 @@ export class CacheService {
             : (params.authorId ? `author:${params.authorId}` : "any_author");
         const before = params.beforeDate || "";
         const after = params.afterDate || "";
-        // NSFW and sort order change the result set, so they must participate in the key —
-        // otherwise toggling them would silently serve results cached with the old values.
+        // NSFW, sort order and the bot filter change the result set, so they must participate
+        // in the key — otherwise toggling them would silently serve results cached with the
+        // old values.
         const sort = params.sortOrder || "desc";
         const nsfw = params.nsfw === false ? "0" : "1";
+        const bots = params.excludeBots ? "nobots" : "allauthors";
 
-        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|before:${before}|after:${after}|sort:${sort}|nsfw:${nsfw}|o:${offset}|eo:${embedOffset}|l:${limit}`;
+        return `${target}|${channels}|q:${query}|f:${filter}|a:${authors}|before:${before}|after:${after}|sort:${sort}|nsfw:${nsfw}|${bots}|o:${offset}|eo:${embedOffset}|l:${limit}`;
     }
 
     /**

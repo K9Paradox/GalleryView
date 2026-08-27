@@ -22,6 +22,7 @@ import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
 import { MasonryGrid } from "./MasonryGrid";
 import { SkeletonGrid } from "./SkeletonCard";
+import { DENSITY_RECTS, ICON_PATHS } from "./iconData";
 
 interface GalleryViewProps {
     onClose?: () => void;
@@ -39,10 +40,133 @@ type FilterType = "all" | "image" | "video" | "embed" | "file" | "audio";
 // "guild"   = the whole server
 type ScopeType = "channel" | "parent" | "guild";
 
+// Icon-driven header controls. Every button gets a full text label as its title/aria-label,
+// so the compact header loses none of the text buttons' meaning.
+const FILTER_TABS = [
+    { tab: "all", label: "All media", icon: "all" },
+    { tab: "image", label: "Images & GIFs", icon: "image" },
+    { tab: "video", label: "Videos", icon: "video" },
+    { tab: "embed", label: "Embeds & links", icon: "embed" },
+    { tab: "file", label: "Files", icon: "file" },
+    { tab: "audio", label: "Audio", icon: "audio" }
+] as const;
+
+const DENSITY_OPTIONS = [
+    { variant: "s", value: "180px", label: "Compact grid (~180px)" },
+    { variant: "m", value: "240px", label: "Standard grid (~240px)" },
+    { variant: "l", value: "320px", label: "Large grid (~320px)" },
+    { variant: "xl", value: "420px", label: "Showcase grid (~420px)" }
+] as const;
+
+const VIEW_MODE_OPTIONS = [
+    { value: "dockLeft", label: "Dock gallery left", icon: "dockLeft" },
+    { value: "overlay", label: "Fullscreen overlay", icon: "overlay" },
+    { value: "dockRight", label: "Dock gallery right", icon: "dockRight" }
+] as const;
+
+function writeSetting(key: string, value: string | boolean) {
+    try {
+        (settings.store as any)[key] = value;
+    } catch (err) {
+        console.warn("[GalleryMode] Could not update setting", key, err);
+    }
+}
+
+function GmIcon({ name, size = 16, className }: { name: keyof typeof ICON_PATHS; size?: number; className?: string; }) {
+    const paths = ICON_PATHS[name] || ICON_PATHS.all;
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+            focusable="false"
+            className={className}
+        >
+            {paths.map((d, index) => <path key={index} d={d} />)}
+        </svg>
+    );
+}
+
+function DensityGlyph({ variant, size = 16, className }: { variant: keyof typeof DENSITY_RECTS; size?: number; className?: string; }) {
+    const rects = DENSITY_RECTS[variant] || DENSITY_RECTS.m;
+    return (
+        <svg
+            width={size}
+            height={size}
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+            focusable="false"
+            className={className}
+        >
+            {rects.map((rect, index) => (
+                <rect key={index} x={rect[0]} y={rect[1]} width={rect[2]} height={rect[3]} rx={1.5} />
+            ))}
+        </svg>
+    );
+}
+
 const PAGE_SIZE = 25;
 // Minimum gap between two *automatic* (scroll-triggered) page loads. Manual "Load More"
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
+
+const DOCK_STORAGE_KEY = "GalleryMode:dockWidth";
+const DOCK_DEFAULT_WIDTH = 520;
+const DOCK_MIN_WIDTH = 320;
+const DOCK_MAX_WIDTH = 760;
+const DOCK_MIN_CHAT_WIDTH = 360;
+const DOCK_RESERVE_GAP = 96;
+
+function clampDockWidth(width: number): number {
+    let max = DOCK_MAX_WIDTH;
+    try {
+        max = Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, window.innerWidth - DOCK_MIN_CHAT_WIDTH - DOCK_RESERVE_GAP));
+    } catch {
+        // Module evaluated outside a browser-like context; keep the static max.
+    }
+    return Math.round(Math.min(Math.max(width, DOCK_MIN_WIDTH), max));
+}
+
+function readSavedDockWidth(): number {
+    try {
+        const saved = Number(localStorage.getItem(DOCK_STORAGE_KEY));
+        if (Number.isFinite(saved) && saved > 0) return clampDockWidth(saved);
+    } catch {
+        // Non-fatal; the default dock width is fine.
+    }
+    return clampDockWidth(DOCK_DEFAULT_WIDTH);
+}
+
+function saveDockWidth(width: number) {
+    try {
+        localStorage.setItem(DOCK_STORAGE_KEY, String(clampDockWidth(width)));
+    } catch {
+        // Non-fatal; the drag still works for this session.
+    }
+}
+
+function findDockReservationTarget(): HTMLElement | null {
+    const appMount = document.getElementById("app-mount");
+    if (!appMount) return null;
+
+    const candidates = Array.from(appMount.querySelectorAll<HTMLElement>('[class*="chat_"]'))
+        .filter(element => {
+            if (element.closest(".gm-gallery-overlay-container")) return false;
+            const rect = element.getBoundingClientRect();
+            // Prefer the main chat container, not a tiny nested bit of chat chrome.
+            return rect.width >= 420 && rect.height >= 360;
+        })
+        .sort((a, b) => {
+            const ar = a.getBoundingClientRect();
+            const br = b.getBoundingClientRect();
+            return (br.width * br.height) - (ar.width * ar.height);
+        });
+
+    return candidates[0] || null;
+}
 
 /**
  * Opt-in tracing for session restore / refetch decisions. Enable from the console with:
@@ -217,6 +341,11 @@ function createDefaultSessionState(initialQuery: string, defaults: SessionDefaul
     };
 }
 
+function splitSessionKey(key: string): { channelId: string; guildId: string; } {
+    const [channelId = "nochan", guildId = "noguild"] = key.split("_");
+    return { channelId, guildId };
+}
+
 function mergeSessionState(
     session: GallerySessionState | null,
     initialQuery: string,
@@ -239,13 +368,29 @@ function mergeSessionState(
 
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
     const {
-        animations, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
-        layout, nsfw, prefetchNextPage, rememberSessions, skeletonPlaceholders
+        cardChrome, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
+        layout, nsfw, performanceProfile, rememberSessions, viewMode, hideBotPosts
     } = settings.use([
-        "animations", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
-        "layout", "nsfw", "prefetchNextPage", "rememberSessions", "skeletonPlaceholders"
+        "cardChrome", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
+        "layout", "nsfw", "performanceProfile", "rememberSessions", "viewMode", "hideBotPosts"
     ]);
-    const motion: string = animations || "full";
+
+    /**
+     * Experience presets are intentionally higher-level than the old pile of independent toggles.
+     * Humans pick an intent (pretty, balanced, low-end); the implementation fans that out into
+     * motion, prefetching, session memory and media preview behaviour. Fine-grained controls that
+     * are genuinely useful (thumbnail quality, preview behaviour, card chrome) remain available.
+     */
+    const effectiveProfile = (performanceProfile || "balanced") as "pretty" | "balanced" | "lightweight";
+    const lite = effectiveProfile === "lightweight";
+    const motion: string = lite ? "off" : effectiveProfile === "pretty" ? "full" : "subtle";
+    const effectiveViewMode = (viewMode || "overlay") as "overlay" | "dockRight" | "dockLeft";
+    const isDocked = effectiveViewMode === "dockRight" || effectiveViewMode === "dockLeft";
+    const effectiveCardChrome = (cardChrome || "full") as "full" | "compact" | "minimal";
+    const prefetchEnabled = !lite;
+    const skeletonsEnabled = !lite;
+    const pausePreviewsWhileScrolling = effectiveProfile !== "pretty";
+
     // Measured from Discord's live background so custom/light themes are handled, not guessed.
     const themeTone = useThemeTone();
     // Subscribe to the store rather than reading it once per render. Previously this was a bare
@@ -319,10 +464,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         sortOrder: (defaultSortOrder as GallerySortOrder) || "desc"
     };
 
-    // `rememberSessions` off means always start from the configured defaults.
+    // `rememberSessions` off (or lightweight mode) means always start from the configured defaults.
     const initialSession = mergeSessionState(
-        // A resumed session is always restored, even with rememberSessions off — see persistSession.
-        rememberSessions === false && !resumeKeyRef.current ? null : CacheService.getSession(sessionKey),
+        // A resumed session is always restored, even with session memory off — see persistSession.
+        (rememberSessions === false || lite) && !resumeKeyRef.current ? null : CacheService.getSession(sessionKey),
         initialQuery,
         sessionDefaults
     );
@@ -354,6 +499,26 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
     const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
     const [rateLimitTick, setRateLimitTick] = useState<number>(0);
+    const [isScrolling, setIsScrolling] = useState<boolean>(false);
+    const [dockWidth, setDockWidth] = useState<number>(() => readSavedDockWidth());
+
+    const selectedCardWidth = parseInt(cardMinWidth, 10) || parseInt(defaultCardSize || "240", 10) || 240;
+    const dockContentWidth = Math.max(240, dockWidth - 32);
+    const dockTargetCardWidth = (() => {
+        // Docked density should describe how many photos fit in the panel, not a fixed pixel size
+        // that turns every narrow dock into one or two oversized cards.
+        if (selectedCardWidth <= 180) return 132;
+        if (selectedCardWidth <= 240) return 176;
+        if (selectedCardWidth <= 320) return 240;
+        return 320;
+    })();
+    const dockMaxColumns = selectedCardWidth <= 180 ? 4 : selectedCardWidth <= 240 ? 3 : 2;
+    const dockGridColumns = Math.max(
+        1,
+        Math.min(dockMaxColumns, Math.floor((dockContentWidth + 16) / (dockTargetCardWidth + 16)))
+    );
+    const adaptiveColumnWidth = isDocked ? dockTargetCardWidth : selectedCardWidth;
+    const adaptiveCardMinWidthPx = `${selectedCardWidth}px`;
 
     const containerRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -361,6 +526,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const channelSelectRef = useRef<HTMLDivElement>(null);
     const threadSelectRef = useRef<HTMLDivElement>(null);
     const authorInputRef = useRef<HTMLDivElement>(null);
+    const scrollingTimerRef = useRef<number | null>(null);
+    const dockReservationRef = useRef<HTMLElement | null>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const lastAutoLoadRef = useRef<number>(0);
@@ -592,19 +759,19 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             const host = threadHostChannel?.name || "channel";
             if (selectedThreadIds.length === 1) {
                 const picked = siblingThreads.find((thread: any) => thread.id === selectedThreadIds[0]);
-                return `🧵 ${picked?.name || "1 thread"}`;
+                return picked?.name || "1 thread";
             }
-            if (selectedThreadIds.length > 1) return `🧵 ${selectedThreadIds.length} threads in #${host}`;
+            if (selectedThreadIds.length > 1) return `${selectedThreadIds.length} threads in #${host}`;
             // Nothing picked yet: the picker mode still searches everything under the host.
-            return `🧵 All threads in #${host}`;
+            return `All threads in #${host}`;
         }
         if (scope === "guild") return "Entire Server";
         // In a thread, name the thread itself — showing the parent channel here is what made it
         // look like the gallery had ignored the subthread.
-        if (inThread) return `🧵 ${currentChannel?.name || "Thread"}`;
+        if (inThread) return currentChannel?.name || "Thread";
         // A forum/media channel's media all lives in its posts, so say so rather than implying
         // the search is limited to the channel surface itself.
-        if (isThreadParentChannel(currentChannel)) return `🧵 All sub threads in #${currentChannelName}`;
+        if (isThreadParentChannel(currentChannel)) return `All sub threads in #${currentChannelName}`;
         return guildId ? `#${currentChannelName}` : currentChannelName;
     }, [currentChannel, effectiveSelectedChannelIds, guildChannels, guildId, inThread, scope, selectedThreadIds, siblingThreads, threadHostChannel]);
 
@@ -625,12 +792,35 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     // Drop the resume pin as soon as the user navigates somewhere new with the gallery open;
     // from then on the gallery tracks the selected channel again, as it does normally.
+    //
+    // Exception: docked Jump-to-message intentionally pins the gallery while chat navigates within
+    // the same server. That pin must *not* survive a real server switch though, or the dock keeps
+    // showing the previous guild's media. DMs are treated like their own "server" by requiring the
+    // channel id to match when both keys have no guild.
     const mountedLiveKeyRef = useRef<string>(liveSessionKey);
     useEffect(() => {
         if (liveSessionKey === mountedLiveKeyRef.current) return;
         mountedLiveKeyRef.current = liveSessionKey;
-        // A jump deliberately navigates away; that must not clear the pin it just set.
-        if (jumpPinnedRef.current) return;
+
+        if (jumpPinnedRef.current) {
+            const pinned = pinnedKeyRef.current;
+            if (pinned) {
+                const pinnedParts = splitSessionKey(pinned);
+                const liveParts = splitSessionKey(liveSessionKey);
+                const crossedServer = pinnedParts.guildId !== liveParts.guildId;
+                const crossedDm = pinnedParts.guildId === "noguild"
+                    && liveParts.guildId === "noguild"
+                    && pinnedParts.channelId !== liveParts.channelId;
+
+                if (!crossedServer && !crossedDm) return;
+            }
+
+            jumpPinnedRef.current = false;
+            sessionSealedRef.current = false;
+            setPinnedKey(null);
+            return;
+        }
+
         setPinnedKey(null);
     }, [liveSessionKey]);
 
@@ -677,11 +867,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         scrollTop = lastScrollTopRef.current,
         { force = false }: { force?: boolean; } = {}
     ) => {
-        // Honour the "don't remember sessions" preference at the write side too, so nothing is
-        // left behind to restore later. `force` overrides it for the jump-and-return round trip:
-        // that setting means "don't carry state between visits", not "lose my place when I click
-        // Jump", and the entry is consumed immediately on return.
-        if (rememberSessions === false && !force) return;
+        // Honour the "don't remember sessions" preference (and lightweight mode's position-memory
+        // cut) at the write side too, so nothing is left behind to restore later. `force`
+        // overrides it for the jump-and-return round trip: that setting means "don't carry state
+        // between visits", not "lose my place when I click Jump", and the entry is consumed
+        // immediately on return.
+        if ((rememberSessions === false || lite) && !force) return;
 
         // Once the jump snapshot is taken the session is sealed. Everything that runs during
         // teardown (the state-change effect, the unmount cleanup) would otherwise write over it
@@ -708,7 +899,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             selectedChannelIds: snapshot.selectedChannelIds,
             selectedThreadIds: snapshot.selectedThreadIds
         });
-    }, [rememberSessions, sessionKey]);
+    }, [lite, rememberSessions, sessionKey]);
 
     /**
      * Snapshot the gallery so it can be restored after "jump to message".
@@ -716,24 +907,21 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
      * Must run before NavigationRouter.transitionTo(): that changes the selected channel, which
      * re-keys the session, so a save afterwards would be filed under the destination channel.
      */
-    const handleBeforeJump = React.useCallback(() => {
-        // Freeze this gallery's identity for the rest of its life.
-        //
-        // transitionTo() changes the selected channel while the overlay is still mounted, and
-        // React flushes that store update before the unmount. Without pinning, sessionKey would
-        // flip to the destination and three separate effects would fire in order:
-        //   1. the session-swap effect re-saves the old key with scrollTop 0, then hydrates the
-        //      destination channel's (empty) session over our state,
-        //   2. the state-change effect saves that emptied state,
-        //   3. the unmount cleanup saves it again.
-        // The good snapshot taken here would be overwritten before the user ever reopened.
-        // Pinning keeps sessionKey stable so all of those become no-ops against the same key.
+    const handleBeforeJump = React.useCallback((willCloseGallery = true) => {
+        // Freeze this gallery's identity before NavigationRouter.transitionTo() changes Discord's
+        // selected channel. In fullscreen mode the gallery immediately unmounts, so we also mark a
+        // one-shot resume session and seal writes during teardown. In docked mode the gallery stays
+        // mounted beside chat; sealing would make the live gallery act like it was already gone, and
+        // the channel change would otherwise reset its search/scroll state.
         jumpPinnedRef.current = true;
         setPinnedKey(sessionKey);
 
         persistSession(sessionKey, lastScrollTopRef.current, { force: true });
-        CacheService.markResumeSession(sessionKey);
-        sessionSealedRef.current = true;
+
+        if (willCloseGallery) {
+            CacheService.markResumeSession(sessionKey);
+            sessionSealedRef.current = true;
+        }
     }, [persistSession, sessionKey]);
 
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
@@ -860,7 +1048,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             nsfw,
             beforeDate: beforeDate || undefined,
             afterDate: afterDate || undefined,
-            sortOrder
+            sortOrder,
+            excludeBots: hideBotPosts === true
         };
     };
 
@@ -1065,7 +1254,106 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             clearTimeout(deferredAutoLoadRef.current);
             deferredAutoLoadRef.current = null;
         }
+        if (scrollingTimerRef.current != null) {
+            clearTimeout(scrollingTimerRef.current);
+            scrollingTimerRef.current = null;
+        }
     }, []);
+
+    useEffect(() => {
+        const handleResize = () => setDockWidth(width => clampDockWidth(width));
+        window.addEventListener("resize", handleResize);
+        return () => window.removeEventListener("resize", handleResize);
+    }, []);
+
+    useEffect(() => {
+        if (!isDocked) return;
+
+        const root = document.documentElement;
+        const side = effectiveViewMode === "dockRight" ? "right" : "left";
+        let frame = 0;
+        let settleTimer = 0;
+
+        const clearReservation = () => {
+            dockReservationRef.current?.classList.remove("gm-discord-reserved-for-gallery");
+            dockReservationRef.current = null;
+        };
+
+        const syncDockReservation = () => {
+            clearReservation();
+
+            // Measure the chat before adding the margin reservation. For left dock this is what
+            // lets the panel sit between Discord's sidebars and chat instead of covering server /
+            // channel navigation.
+            const target = findDockReservationTarget();
+            if (target) {
+                const rect = target.getBoundingClientRect();
+                if (side === "left") {
+                    root.style.setProperty("--gm-dock-left-x", `${Math.max(8, Math.round(rect.left))}px`);
+                } else {
+                    root.style.removeProperty("--gm-dock-left-x");
+                }
+                target.classList.add("gm-discord-reserved-for-gallery");
+                dockReservationRef.current = target;
+            } else {
+                root.style.removeProperty("--gm-dock-left-x");
+            }
+        };
+
+        root.classList.add("gm-dock-active", `gm-dock-active-${side}`);
+        syncDockReservation();
+        // Discord often finishes moving channel/member columns one frame after route changes.
+        // A second pass avoids the "dock is wrong until reopen" glitch without polling forever.
+        frame = requestAnimationFrame(syncDockReservation);
+        settleTimer = window.setTimeout(syncDockReservation, 250);
+        window.addEventListener("resize", syncDockReservation);
+
+        return () => {
+            if (frame) cancelAnimationFrame(frame);
+            if (settleTimer) clearTimeout(settleTimer);
+            window.removeEventListener("resize", syncDockReservation);
+            root.classList.remove("gm-dock-active", "gm-dock-active-left", "gm-dock-active-right");
+            root.style.removeProperty("--gm-active-dock-width");
+            root.style.removeProperty("--gm-dock-left-x");
+            clearReservation();
+        };
+    }, [effectiveViewMode, isDocked, liveSessionKey]);
+
+    useEffect(() => {
+        if (!isDocked) return;
+        document.documentElement.style.setProperty("--gm-active-dock-width", `${dockWidth}px`);
+    }, [dockWidth, isDocked]);
+
+    const startDockResize = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!isDocked) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startX = e.clientX;
+        const startWidth = dockWidth;
+        const direction = effectiveViewMode;
+        let latestWidth = startWidth;
+
+        document.body.classList.add("gm-resizing-dock");
+
+        const handleMove = (event: MouseEvent) => {
+            const delta = direction === "dockRight"
+                ? startX - event.clientX
+                : event.clientX - startX;
+            latestWidth = clampDockWidth(startWidth + delta);
+            setDockWidth(latestWidth);
+        };
+
+        const finish = () => {
+            document.body.classList.remove("gm-resizing-dock");
+            window.removeEventListener("mousemove", handleMove);
+            window.removeEventListener("mouseup", finish);
+            saveDockWidth(latestWidth);
+        };
+
+        window.addEventListener("mousemove", handleMove);
+        window.addEventListener("mouseup", finish, { once: true });
+    };
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -1149,7 +1437,17 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
 
         // Only count it as user activity if the position actually moved.
-        if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) lastUserScrollRef.current = Date.now();
+        if (Math.abs(scrollTop - lastScrollTopRef.current) > 1) {
+            lastUserScrollRef.current = Date.now();
+            if (pausePreviewsWhileScrolling) {
+                setIsScrolling(true);
+                if (scrollingTimerRef.current != null) clearTimeout(scrollingTimerRef.current);
+                scrollingTimerRef.current = window.setTimeout(() => {
+                    scrollingTimerRef.current = null;
+                    setIsScrolling(false);
+                }, 180);
+            }
+        }
         lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
         persistSession(sessionKey, scrollTop);
@@ -1246,8 +1544,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
         isHydratingSessionRef.current = true;
         lastSessionKeyRef.current = sessionKey;
-        applySessionState(rememberSessions === false ? null : CacheService.getSession(sessionKey));
-    }, [applySessionState, persistSession, rememberSessions, sessionKey]);
+        applySessionState((rememberSessions === false || lite) ? null : CacheService.getSession(sessionKey));
+    }, [applySessionState, lite, persistSession, rememberSessions, sessionKey]);
 
     /**
      * Restore the saved scroll position.
@@ -1360,11 +1658,13 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Signature of everything that genuinely defines "which search is this". A reset is only
     // correct when this actually changes; comparing it explicitly is far more robust than
     // relying on a one-shot flag, which any stray dependency change could burn through.
+    const searchTargetSignature = pinnedKey ?? `${channelId ?? ""}_${guildId ?? ""}`;
+    const liveThreadIdsSignature = pinnedKey ? "pinned" : threadChannelIdsKey;
     const searchSignature = [
-        channelId ?? "", guildId ?? "", scope, filterType, activeQuery,
-        beforeDate, afterDate, sortOrder, String(nsfw),
+        searchTargetSignature, scope, filterType, activeQuery,
+        beforeDate, afterDate, sortOrder, String(nsfw), String(hideBotPosts === true),
         selectedChannelIdsKey, selectedThreadIdsKey, selectedTypesKey,
-        selectedAuthorsKey, threadChannelIdsKey
+        selectedAuthorsKey, liveThreadIdsSignature
     ].join("|");
 
     const lastSearchSignatureRef = useRef<string>(searchSignature);
@@ -1433,7 +1733,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Keep one page ahead of the user at all times. When the current page settles, quietly warm
     // the next one into the cache so "Load More" / scrolling resolves instantly with no spinner.
     useEffect(() => {
-        if (!prefetchNextPage) return;
+        if (!prefetchEnabled) return;
         if (loading || loadingMore || error || !hasMore) return;
         if (mediaItems.length === 0) return;
 
@@ -1448,7 +1748,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }, 400);
 
         return () => clearTimeout(timer);
-    }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset, prefetchNextPage]);
+    }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset, prefetchEnabled]);
 
     useEffect(() => {
         const target = observerTargetRef.current;
@@ -1486,7 +1786,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return ratios;
     }, [mediaItems]);
 
-    const showSkeletons = skeletonPlaceholders && !error && (loading || loadingMore);
+    const showSkeletons = skeletonsEnabled && !error && (loading || loadingMore);
     // On a fresh query fill roughly a viewport; when appending, only show a page's worth.
     const skeletonCount = loading ? Math.min(PAGE_SIZE, 18) : Math.min(PAGE_SIZE, 8);
 
@@ -1553,7 +1853,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
     const viewContent = (
         <div
-            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone}`}
+            className={`gm-gallery-overlay-container gm-motion-${motion} gm-theme-${themeTone} gm-view-${effectiveViewMode} gm-chrome-${effectiveCardChrome}${lite ? " gm-lite" : ""}${isScrolling ? " gm-is-scrolling" : ""}`}
+            style={{ "--gm-dock-width": `${dockWidth}px` } as React.CSSProperties}
             ref={containerRef}
             tabIndex={-1}
             role="dialog"
@@ -1561,6 +1862,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             onKeyDown={handleGalleryKeyDown}
             onMouseDown={keepFocusInsideGallery}
         >
+            {isDocked && (
+                <div
+                    className="gm-dock-resize-handle"
+                    onMouseDown={startDockResize}
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="Drag to resize the docked gallery"
+                />
+            )}
             <div className="gm-gallery-header">
                 <div className="gm-header-row">
                     <div className="gm-header-left">
@@ -1568,58 +1878,72 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <svg width="22" height="24" viewBox="0 0 24 24" fill="currentColor">
                                 <path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM5 15l3.5-4.5 2.5 3.01L14.5 9l4.5 6H5z" />
                             </svg>
-                            Gallery Mode
+                            <span className="gm-plugin-title-text">Gallery Mode</span>
                         </h2>
-                        <span className="gm-channel-pill">{channelPillLabel}</span>
+                        <span className="gm-channel-pill" title={channelPillLabel}>{channelPillLabel}</span>
                         {!!pinnedKey && (
                             <button
-                                className="gm-scope-btn gm-resumed-pill"
+                                className="gm-scope-btn gm-icon-only gm-resumed-pill"
                                 onClick={() => setPinnedKey(null)}
                                 title="Restored from before you jumped to a message. Click to switch to the channel you're viewing now."
+                                aria-label="Resumed session — switch to the channel you're viewing now"
                             >
-                                ↩ Resumed · switch to current channel
+                                <GmIcon name="reply" size={14} />
                             </button>
                         )}
                         {/* Always rendered (just blank when empty) and given a fixed min-width, so
                             switching filters can't resize it and shove the whole header sideways.
                             The digits use tabular figures for the same reason: proportional digits
                             change width as the count ticks up during a load. */}
-                        <span className="gm-count-badge">
+                        <span
+                            className="gm-count-badge"
+                            title={mediaItems.length > 0
+                                ? `${mediaItems.length.toLocaleString()} media loaded${totalResults > mediaItems.length ? ` of ${totalResults.toLocaleString()} matching` : ""}`
+                                : undefined}
+                        >
                             {mediaItems.length > 0
-                                ? `${mediaItems.length.toLocaleString()} loaded${totalResults > mediaItems.length ? ` of ${totalResults.toLocaleString()}` : ""}`
+                                ? `${mediaItems.length.toLocaleString()}${totalResults > mediaItems.length ? ` / ${totalResults.toLocaleString()}` : ""}`
                                 : ""}
                         </span>
                     </div>
 
                     <div className="gm-header-controls">
-                        <div className="gm-scope-toggle">
+                        <div className="gm-scope-toggle" role="group" aria-label="Search scope">
                             <button
-                                className={`gm-scope-btn ${scope === "channel" ? "active" : ""}`}
+                                className={`gm-scope-btn gm-icon-only ${scope === "channel" ? "active" : ""}`}
+                                title={`Scope: ${defaultScopeLabel}`}
+                                aria-label={`Search scope: ${defaultScopeLabel}`}
                                 onClick={() => {
                                     setScope("channel");
                                     setSelectedChannelIds([]);
                                     setShowChannelDropdown(false);
                                 }}
                             >
-                                {defaultScopeLabel}
+                                <GmIcon name="channel" size={15} />
                             </button>
                             {/* Only meaningful when the current channel is a thread/post, or the
                                 user is viewing a forum/media channel that contains posts. */}
                             {!!guildId && !!threadHostId && (
                                 <button
-                                    className={`gm-scope-btn ${scope === "parent" ? "active" : ""}`}
+                                    className={`gm-scope-btn gm-icon-only ${scope === "parent" ? "active" : ""}`}
                                     onClick={() => {
                                         setScope("parent");
                                         setShowChannelDropdown(false);
                                     }}
-                                    title={`Choose which threads in #${threadHostChannel?.name || "this channel"} to search`}
+                                    title={`Choose threads in #${threadHostChannel?.name || "this channel"}`}
+                                    aria-label={`Choose threads in #${threadHostChannel?.name || "this channel"}`}
                                 >
-                                    Selected Threads
+                                    <GmIcon name="threads" size={15} />
                                 </button>
                             )}
                             {!!guildId && (
-                                <button className={`gm-scope-btn ${scope === "guild" ? "active" : ""}`} onClick={() => setScope("guild")}>
-                                    Entire Server
+                                <button
+                                    className={`gm-scope-btn gm-icon-only ${scope === "guild" ? "active" : ""}`}
+                                    onClick={() => setScope("guild")}
+                                    title="Scope: Entire server"
+                                    aria-label="Search scope: Entire server"
+                                >
+                                    <GmIcon name="server" size={15} />
                                 </button>
                             )}
                         </div>
@@ -1629,8 +1953,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                 <button
                                     className={`gm-scope-btn gm-channel-select-btn ${selectedThreadIds.length > 0 ? "active" : ""}`}
                                     onClick={() => setShowThreadDropdown(value => !value)}
+                                    title="Pick which threads to search"
                                 >
-                                    🧵 {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} Selected` : "Pick Threads"} ▼
+                                    {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} threads` : "Threads"} <GmIcon name="chevronDown" size={12} />
                                 </button>
                                 {showThreadDropdown && (
                                     <div className="gm-channel-dropdown">
@@ -1668,8 +1993,9 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                         setShowChannelDropdown(value => !value);
                                         setChannelFilter("");
                                     }}
+                                    title="Pick which channels to search"
                                 >
-                                    # {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} Selected` : "Select Channels"} ▼
+                                    {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} channels` : "Channels"} <GmIcon name="chevronDown" size={12} />
                                 </button>
                                 {showChannelDropdown && (
                                     <div className="gm-channel-dropdown">
@@ -1738,7 +2064,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                                     checked={effectiveSelectedChannelIds.includes(channel.id)}
                                                                     onChange={() => toggleChannelSelection(channel.id)}
                                                                 />
-                                                                <span>{thread ? `🧵 ${channel.name}` : `#${channel.name}`}</span>
+                                                                <span>{thread ? channel.name : `#${channel.name}`}</span>
                                                             </label>
                                                         );
                                                     })}
@@ -1754,39 +2080,65 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     <div
                         className={`gm-filter-tabs${selectedTypes.length > 1 ? " gm-multi-select" : ""}`}
                         title="Click to pick one type — Shift or Ctrl click to combine several"
+                        role="group"
+                        aria-label="Media type filter"
                     >
-                        {(["all", "image", "video", "embed", "file", "audio"] as const).map(tab => {
+                        {FILTER_TABS.map(({ tab, label, icon }) => {
                             const isMulti = selectedTypes.length > 1;
                             const active = isMulti ? selectedTypes.includes(tab) : filterType === tab;
 
                             return (
                                 <button
                                     key={tab}
-                                    className={`gm-tab-btn ${active ? "active" : ""}`}
+                                    className={`gm-tab-btn gm-icon-only ${active ? "active" : ""}`}
                                     aria-pressed={active}
+                                    aria-label={label}
+                                    title={label}
                                     onClick={(e) => toggleFilterTab(tab, e.shiftKey || e.ctrlKey || e.metaKey)}
                                 >
-                                    {tab.toUpperCase()}
+                                    <GmIcon name={icon} size={15} />
                                 </button>
                             );
                         })}
                     </div>
 
-                    <div className="gm-scope-toggle" title="Adjust Card Grid Density">
-                        {[
-                            { label: "S", value: "180px", title: "Compact Grid" },
-                            { label: "M", value: "240px", title: "Standard Grid" },
-                            { label: "L", value: "320px", title: "Large Grid" },
-                            { label: "XL", value: "420px", title: "Showcase Grid" }
-                        ].map(size => (
-                            <button key={size.value} className={`gm-scope-btn ${cardMinWidth === size.value ? "active" : ""}`} title={size.title} onClick={() => setCardMinWidth(size.value)}>
-                                {size.label}
+                    <div className="gm-scope-toggle" role="group" aria-label="Grid density" title="Grid density">
+                        {DENSITY_OPTIONS.map(size => (
+                            <button
+                                key={size.value}
+                                className={`gm-scope-btn gm-icon-only ${cardMinWidth === size.value ? "active" : ""}`}
+                                title={size.label}
+                                aria-label={size.label}
+                                onClick={() => setCardMinWidth(size.value)}
+                            >
+                                <DensityGlyph variant={size.variant} size={14} />
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="gm-scope-toggle gm-window-toggle" role="group" aria-label="Gallery window mode" title="Gallery window mode">
+                        {VIEW_MODE_OPTIONS.map(option => (
+                            <button
+                                key={option.value}
+                                className={`gm-scope-btn gm-icon-only ${effectiveViewMode === option.value ? "active" : ""}`}
+                                title={option.label}
+                                aria-label={option.label}
+                                onClick={() => writeSetting("viewMode", option.value)}
+                            >
+                                <GmIcon name={option.icon} size={15} />
                             </button>
                         ))}
                     </div>
 
                     <div className="gm-header-actions">
-                        <button className="gm-scope-btn gm-reset-btn" onClick={clearFilters} title="Clear search/filter/author/channel selections">Reset</button>
+                        <button
+                            className="gm-icon-btn"
+                            onClick={clearFilters}
+                            title="Clear all filters (search, author, dates, channels)"
+                            aria-label="Clear all filters"
+                        >
+                            <GmIcon name="reset" size={15} />
+                        </button>
 
                         <button
                             className="gm-icon-btn"
@@ -1799,15 +2151,19 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             </svg>
                         </button>
 
-                        {!!onClose && <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)">✕</button>}
+                        {!!onClose && (
+                            <button className="gm-close-btn" onClick={onClose} title="Exit Gallery Mode (Esc)" aria-label="Exit Gallery Mode">
+                                <GmIcon name="close" size={14} />
+                            </button>
+                        )}
                     </div>
                 </div>
 
                 <div className="gm-header-row gm-header-row-search">
                     <div className="gm-author-search-wrap">
                         {selectedAuthors.map(author => (
-                            <span key={author.id} className="gm-channel-pill gm-author-pill" onClick={() => removeAuthorPill(author.id)} title="Click to remove author">
-                                👤 {author.name} ✕
+                            <span key={author.id} className="gm-channel-pill gm-author-pill" onClick={() => removeAuthorPill(author.id)} title={`Remove author @${author.name}`}>
+                                {author.name} ✕
                             </span>
                         ))}
 
@@ -1815,7 +2171,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                             <input
                                 type="text"
                                 className="gm-search-input gm-author-input"
-                                placeholder="Add author @name..."
+                                placeholder="Filter by author…"
+                                title="Type an @username to filter by author"
                                 value={authorQuery}
                                 onChange={(e) => {
                                     setAuthorQuery(e.currentTarget.value);
@@ -1843,18 +2200,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         </div>
                     </div>
 
-                    <form className="gm-search-form" onSubmit={handleSearchSubmit}>
+                    <form className="gm-search-form" onSubmit={handleSearchSubmit} role="search">
                         <input
                             type="text"
                             className="gm-search-input"
-                            placeholder="Search keywords..."
+                            placeholder="Search keywords…"
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.currentTarget.value)}
                         />
                         {!!searchQuery && (
-                            <button type="button" className="gm-search-clear-btn" onClick={() => { setSearchQuery(""); setActiveQuery(""); }}>×</button>
+                            <button type="button" className="gm-search-clear-btn" title="Clear search" aria-label="Clear search" onClick={() => { setSearchQuery(""); setActiveQuery(""); }}>×</button>
                         )}
-                        <button type="submit" className="gm-search-submit-btn">Search</button>
+                        <button type="submit" className="gm-search-submit-btn" title="Search" aria-label="Search">
+                            <GmIcon name="search" size={14} />
+                        </button>
                     </form>
 
                     <div className="gm-date-range-wrap" title="Only show media sent within this date range">
@@ -1878,11 +2237,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     </div>
 
                     <button
-                        className={`gm-scope-btn gm-sort-btn ${sortOrder === "asc" ? "active" : ""}`}
+                        className={`gm-scope-btn gm-icon-only gm-sort-btn ${sortOrder === "asc" ? "active" : ""}`}
                         onClick={() => setSortOrder(order => order === "desc" ? "asc" : "desc")}
-                        title="Toggle between newest-first and oldest-first results"
+                        title={sortOrder === "desc" ? "Newest first — click for oldest first" : "Oldest first — click for newest first"}
+                        aria-label={sortOrder === "desc" ? "Sorted newest first" : "Sorted oldest first"}
                     >
-                        {sortOrder === "desc" ? "↓ Newest" : "↑ Oldest"}
+                        {sortOrder === "desc" ? <GmIcon name="sortDesc" size={15} /> : <GmIcon name="sortAsc" size={15} />}
                     </button>
                 </div>
             </div>
@@ -1918,13 +2278,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     layout === "masonry" ? (
                         <MasonryGrid
                             items={loading ? [] : mediaItems}
-                            columnWidth={parseInt(cardMinWidth, 10) || 240}
+                            columnWidth={adaptiveColumnWidth}
                             renderItem={item => (
                                 <MediaCard
                                     key={item.id}
                                     item={item}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={handleBeforeJump}
+                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
+                                    closeOnJump={!isDocked}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             )}
                             trailing={showSkeletons ? <SkeletonGrid count={skeletonCount} ratios={recentRatios} /> : null}
@@ -1932,14 +2294,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     ) : (
                         <div
                             className="gm-media-grid"
-                            style={{ "--gm-card-min-width": cardMinWidth, "--gm-col-width": cardMinWidth } as React.CSSProperties}
+                            style={{
+                                "--gm-card-min-width": adaptiveCardMinWidthPx,
+                                "--gm-grid-columns": dockGridColumns,
+                                "--gm-col-width": adaptiveCardMinWidthPx
+                            } as React.CSSProperties}
                         >
                             {!loading && mediaItems.map(item => (
                                 <MediaCard
                                     key={item.id}
                                     item={item}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={handleBeforeJump}
+                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
+                                    closeOnJump={!isDocked}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             ))}
                             {showSkeletons && (
@@ -1949,7 +2317,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     )
                 )}
 
-                {loading && !skeletonPlaceholders && (
+                {loading && !skeletonsEnabled && (
                     <div className="gm-loading-state">
                         <div className="gm-spinner-icon gm-spinner-large" />
                         <p>Querying Discord Search…</p>
@@ -1957,7 +2325,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                 )}
 
                 <div ref={observerTargetRef} className="gm-scroll-sentinel">
-                    {loadingMore && !skeletonPlaceholders && (
+                    {loadingMore && !skeletonsEnabled && (
                         <div className="gm-infinite-spinner-wrapper">
                             <div className="gm-spinner-icon" />
                             <span>Loading more media…</span>

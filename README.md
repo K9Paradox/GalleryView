@@ -43,14 +43,15 @@ It runs entirely on Discord's native `/messages/search` endpoint. Nothing is scr
 | **Channel picker** | Server-wide searches can target specific channels, grouped into collapsible categories with a filter box, per-category select-all, and threads nested under their owning channel |
 | **Media types** | All · Images & GIFs · Videos · Embeds · Files · Audio. <kbd>Shift</kbd> or <kbd>Ctrl</kbd> click to combine several |
 | **Filters** | Keyword search, multi-author filtering (works in DMs and group DMs), date range, newest/oldest sort |
+| **Content filters** | Optional one-switch exclusion of media posted by bots and webhooks |
 
 ### Browsing
 
 - **Two layouts** — a uniform grid, or true masonry that respects each image's aspect ratio while preserving reading order.
 - **Four densities** — Compact, Standard, Large and Showcase.
-- **Infinite scroll** with background prefetch, so the next page is usually already loaded before you reach it.
-- **Skeleton placeholders** sized from real aspect ratios, instead of a blank loading screen.
-- **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message.
+- **Infinite scroll** with preset-aware background prefetch, so Balanced and Pretty feel instant while Low-end avoids extra work.
+- **Docked split-screen mode** can pin the gallery to the left or right, reserve room for chat when Discord's layout can be safely detected, switch directly from the gallery header, and resize by dragging the dock edge.
+- **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message (Low-end disables cross-session memory).
 
 ### Per-item actions
 
@@ -61,10 +62,10 @@ Right-click any card for the same actions in a context menu.
 ### Presentation
 
 - Adapts automatically to **light, dark and custom themes**, by measuring Discord's actual background rather than guessing from a class name.
-- **Three motion tiers** — full (staggered reveals, blur-up thumbnails, hover lift), subtle, or off. `prefers-reduced-motion` is always respected.
+- **Experience presets** — Pretty, Balanced, and Low-end — control motion, blur, prefetching, session memory and media preview cost as one human-facing choice.
 - **Spoiler and age-restricted media** can stay blurred until clicked.
-- Metadata badges and the author footer can both be hidden for a pure gallery wall.
-- Responsive down to very small and very short windows.
+- Card information density can be Full, Compact, or Minimal for a pure gallery wall.
+- Responsive down to very small and very short windows, and tolerant of Discord's own UI scaling/zoom — the grid, header, docked mode and dropdowns shrink instead of breaking.
 
 ### Under the hood
 
@@ -76,6 +77,8 @@ Discord rate-limits search aggressively, so a lot of the work here is about aski
 - Separate pagination cursors for the attachment and embed streams.
 - Auto-loading paced against real user scrolling rather than layout churn.
 - `React.memo` on cards, LRU caches, and `content-visibility` so off-screen cards cost nothing.
+- Scroll-aware preview pausing in Balanced/Low-end keeps GIF/video work from fighting active scrolling.
+- A compact icon-driven header keeps every control labelled via tooltips while leaving more room for the media itself.
 
 ---
 
@@ -124,50 +127,45 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 |---|---|
 | Open / close | Header bar icon, or <kbd>Esc</kbd> to close |
 | Combine media types | <kbd>Shift</kbd> or <kbd>Ctrl</kbd> click the type tabs |
-| Change density | The **S / M / L / XL** buttons |
+| Change density | The four grid-density icons in the header; card sizes clamp to the current window/dock width |
 | Search a specific thread | Open the thread first, then the gallery |
-| Search every thread in a channel | **All Sub Threads**, then optionally **Selected Threads** to narrow it |
-| Reset every filter | **Reset** |
+| Search every thread in a channel | Use the thread-scope icon, then the Threads picker to narrow it |
+| Reset every filter | The circular reset icon |
+| Switch overlay/dock mode | Use the left-dock / overlay / right-dock icons in the header |
+| Resize docked gallery | Drag the inner edge of the docked panel |
 | Open plugin settings | The gear icon in the gallery header |
 
 ---
 
 ## ⚙️ Settings
 
+The settings are intentionally grouped around how people think about the gallery, not how the implementation works. Most users should only need **Gallery window**, **Experience preset**, **Gallery layout**, **Card density**, and **Card information density**; the remaining options are defaults or content-safety preferences.
+
 <details>
-<summary><b>Appearance</b></summary>
+<summary><b>Window and experience</b></summary>
+
+| Setting | Options | Default |
+|---|---|---|
+| Gallery window | Overlay · Dock right · Dock left | Overlay |
+| Experience preset | Balanced · Pretty · Low-end | Balanced |
+</details>
+
+> **Low-end** forces motion off, removes backdrop blur, disables background prefetch and cross-session memory, pauses inline media, and uses downscaled/static previews. **Balanced** keeps the UI snappy and pauses previews while scrolling. **Pretty** keeps the richer glass/motion treatment.
+
+<details>
+<summary><b>Cards and previews</b></summary>
 
 | Setting | Options | Default |
 |---|---|---|
 | Gallery layout | Grid · Masonry | Grid |
-| Card width / density | Compact · Standard · Large · Showcase | Standard |
-| Motion & transitions | Full · Subtle · Off | Full |
-| Skeleton placeholders | On / off | On |
-| Show date and type badges | On / off | On |
-| Show author footer | On / off | On |
+| Card density | Compact · Standard · Large · Showcase | Standard |
+| Thumbnail quality | Auto · Original · 720px · 480px · 320px | Auto |
+| GIF and video previews | Auto · Animated · Hover · Static | Auto |
+| Card information density | Full · Compact · Minimal | Full |
 </details>
 
 <details>
-<summary><b>Media playback</b></summary>
-
-| Setting | Options | Default |
-|---|---|---|
-| GIF playback | Always · On hover · Only when opened | Always |
-| Video previews | On hover · Always · Only when opened | On hover |
-</details>
-
-<details>
-<summary><b>Privacy and content</b></summary>
-
-| Setting | Options | Default |
-|---|---|---|
-| Blur spoiler-tagged media | On / off | On |
-| Blur age-restricted channels | On / off | Off |
-| Include NSFW results | On / off | On |
-</details>
-
-<details>
-<summary><b>Defaults and behaviour</b></summary>
+<summary><b>Search defaults</b></summary>
 
 | Setting | Options | Default |
 |---|---|---|
@@ -175,7 +173,17 @@ Open any channel and click the gallery icon in the header bar, next to the inbox
 | Default media filter | All · Images · Videos · Embeds · Files · Audio | All |
 | Default sort order | Newest · Oldest | Newest |
 | Remember sessions | On / off | On |
-| Prefetch next page | On / off | On |
+</details>
+
+<details>
+<summary><b>Privacy and content</b></summary>
+
+| Setting | Options | Default |
+|---|---|---|
+| Hide bot & webhook posts | On / off | Off |
+| Blur spoiler-tagged media | On / off | On |
+| Blur age-restricted channels | On / off | Off |
+| Include NSFW results | On / off | On |
 </details>
 
 ---

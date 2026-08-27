@@ -39,9 +39,10 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
     // restoration to the wrong place.
     const [columnCount, setColumnCount] = useState<number>(0);
     // Cards are shorter without the author footer, so the packer must account for it or the
-    // columns come out unbalanced.
-    const { showAuthorFooter } = settings.use(["showAuthorFooter"]);
-    const footerUnits = showAuthorFooter === false ? 0 : FOOTER_UNITS;
+    // columns come out unbalanced. Card chrome is the human-facing setting that replaced the old
+    // pair of separate badge/footer toggles: only the "Full" density keeps the footer.
+    const { cardChrome } = settings.use(["cardChrome"]);
+    const footerUnits = cardChrome === "full" || !cardChrome ? FOOTER_UNITS : 0;
 
     const measure = React.useCallback(() => {
         const element = containerRef.current;

@@ -5,9 +5,33 @@ import { OptionType } from "@utils/types";
 // index.tsx — importing it from "../index" created an index ↔ GalleryView
 // module cycle, which makes plugin startup order fragile.
 export const settings = definePluginSettings({
+    /**
+     * Vencord's userplugin settings surface is essentially a flat list, so the ordering below is
+     * deliberate product design: common, human-facing choices first; defaults/content controls in
+     * the middle; advanced performance tuning last. Avoid reintroducing one-off implementation
+     * toggles unless they are meaningful to a normal user.
+     */
+    viewMode: {
+        type: OptionType.SELECT,
+        description: "Gallery window",
+        options: [
+            { label: "Overlay — focus entirely on the gallery", value: "overlay", default: true },
+            { label: "Dock right — split-screen with chat", value: "dockRight" },
+            { label: "Dock left — split-screen with chat", value: "dockLeft" }
+        ]
+    },
+    performanceProfile: {
+        type: OptionType.SELECT,
+        description: "Experience preset",
+        options: [
+            { label: "Balanced — snappy default, pauses previews while scrolling", value: "balanced", default: true },
+            { label: "Pretty — richer motion and glass treatment", value: "pretty" },
+            { label: "Low-end — no blur/motion, static previews, no prefetch or session memory", value: "lightweight" }
+        ]
+    },
     layout: {
         type: OptionType.SELECT,
-        description: "Gallery Layout",
+        description: "Gallery layout",
         options: [
             { label: "Grid — uniform square tiles", value: "grid", default: true },
             { label: "Masonry — natural image aspect ratios", value: "masonry" }
@@ -15,83 +39,40 @@ export const settings = definePluginSettings({
     },
     defaultCardSize: {
         type: OptionType.SELECT,
-        description: "Card Width / Grid Density",
+        description: "Card density",
         options: [
-            { label: "Compact (~180px - High Density)", value: "180px" },
-            { label: "Standard (~240px - Balanced)", value: "240px", default: true },
-            { label: "Large (~320px - Expanded)", value: "320px" },
-            { label: "Showcase (~420px - High Detail)", value: "420px" }
+            { label: "Compact — 180px", value: "180px" },
+            { label: "Standard — 240px", value: "240px", default: true },
+            { label: "Large — 320px", value: "320px" },
+            { label: "Showcase — 420px", value: "420px" }
         ]
     },
-    animations: {
+    cardChrome: {
         type: OptionType.SELECT,
-        description: "Motion & transitions",
+        description: "Card information density",
         options: [
-            { label: "Full — staggered card reveals, blur-up, hover lift", value: "full", default: true },
-            { label: "Subtle — quick fades only, no movement", value: "subtle" },
-            { label: "Off — no animation (best for low-end hardware)", value: "off" }
+            { label: "Full — badges and author footer", value: "full", default: true },
+            { label: "Compact — badges only", value: "compact" },
+            { label: "Minimal — clean media wall", value: "minimal" }
         ]
     },
-    skeletonPlaceholders: {
+    hideBotPosts: {
         type: OptionType.BOOLEAN,
-        description: "Show shimmering placeholder cards while a page loads instead of a spinner",
-        default: true
-    },
-    prefetchNextPage: {
-        type: OptionType.BOOLEAN,
-        description: "Quietly pre-load the next page in the background so scrolling never stalls",
-        default: true
-    },
-    gifPlayback: {
-        type: OptionType.SELECT,
-        description: "GIF playback",
-        options: [
-            { label: "Always animate", value: "always", default: true },
-            { label: "Animate on hover", value: "hover" },
-            { label: "Only when opened (static thumbnails)", value: "click" }
-        ]
-    },
-    videoPlayback: {
-        type: OptionType.SELECT,
-        description: "Video previews",
-        options: [
-            { label: "Preview on hover (muted)", value: "hover", default: true },
-            { label: "Autoplay all previews (muted)", value: "always" },
-            { label: "Only when opened (poster frame only)", value: "click" }
-        ]
-    },
-    respectSpoilers: {
-        type: OptionType.BOOLEAN,
-        description: "Blur media from spoiler-tagged messages until clicked",
-        default: true
-    },
-    blurNsfwChannels: {
-        type: OptionType.BOOLEAN,
-        description: "Blur media originating from age-restricted channels until clicked",
+        description: "Hide media posted by bots and webhooks",
         default: false
-    },
-    showMetaOverlay: {
-        type: OptionType.BOOLEAN,
-        description: "Show the date badge and type tag on cards",
-        default: true
-    },
-    showAuthorFooter: {
-        type: OptionType.BOOLEAN,
-        description: "Show the author avatar and username under each card (off = pure gallery wall)",
-        default: true
     },
     defaultScope: {
         type: OptionType.SELECT,
-        description: "Default search scope when the gallery opens",
+        description: "Default search scope",
         options: [
             { label: "Current channel / thread", value: "channel", default: true },
-            { label: "All sub threads (falls back to the channel)", value: "parent" },
+            { label: "All sub threads when available", value: "parent" },
             { label: "Entire server", value: "guild" }
         ]
     },
     defaultFilterType: {
         type: OptionType.SELECT,
-        description: "Default media type filter",
+        description: "Default media type",
         options: [
             { label: "All", value: "all", default: true },
             { label: "Images & GIFs", value: "image" },
@@ -103,20 +84,51 @@ export const settings = definePluginSettings({
     },
     defaultSortOrder: {
         type: OptionType.SELECT,
-        description: "Default result ordering",
+        description: "Default sort order",
         options: [
             { label: "Newest first", value: "desc", default: true },
             { label: "Oldest first", value: "asc" }
         ]
     },
-    rememberSessions: {
+    respectSpoilers: {
         type: OptionType.BOOLEAN,
-        description: "Restore your filters and scroll position when reopening a channel's gallery",
+        description: "Blur spoiler-tagged media until clicked",
         default: true
+    },
+    blurNsfwChannels: {
+        type: OptionType.BOOLEAN,
+        description: "Blur media from age-restricted channels until clicked",
+        default: false
     },
     nsfw: {
         type: OptionType.BOOLEAN,
         description: "Include NSFW results in the gallery",
+        default: true
+    },
+    thumbnailQuality: {
+        type: OptionType.SELECT,
+        description: "Advanced: thumbnail quality",
+        options: [
+            { label: "Auto — follows the experience preset", value: "auto", default: true },
+            { label: "Original — highest detail, most memory", value: "original" },
+            { label: "High — 720px", value: "720" },
+            { label: "Medium — 480px", value: "480" },
+            { label: "Low — 320px", value: "320" }
+        ]
+    },
+    previewBehavior: {
+        type: OptionType.SELECT,
+        description: "Advanced: GIF and video previews",
+        options: [
+            { label: "Auto — follows the experience preset", value: "auto", default: true },
+            { label: "Animated — GIFs animate, videos preview on hover", value: "animated" },
+            { label: "Hover — animate/play only while hovered", value: "hover" },
+            { label: "Static — only play when opened", value: "static" }
+        ]
+    },
+    rememberSessions: {
+        type: OptionType.BOOLEAN,
+        description: "Advanced: remember filters, results and scroll position between gallery opens. Low-end preset overrides this off.",
         default: true
     }
 });

@@ -22,9 +22,10 @@ function fallbackRatio(index: number) {
  * match for whatever is about to replace it.
  */
 export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
-    // Mirror the author-footer setting so placeholders are exactly as tall as the real cards
-    // that replace them — otherwise the grid visibly jumps when the swap happens.
-    const { showAuthorFooter } = settings.use(["showAuthorFooter"]);
+    // Mirror card chrome so placeholders are exactly as tall as the real cards that replace them
+    // — otherwise the grid visibly jumps when the swap happens. Only "Full" includes the footer.
+    const { cardChrome } = settings.use(["cardChrome"]);
+    const showAuthorFooter = cardChrome === "full" || !cardChrome;
     const cards: React.ReactNode[] = [];
 
     for (let i = 0; i < count; i++) {
@@ -44,7 +45,7 @@ export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
                     className="gm-media-preview-wrapper gm-skeleton-preview"
                     style={{ "--gm-item-ratio": `${Math.min(Math.max(ratio, 0.4), 3)}` } as React.CSSProperties}
                 />
-                {showAuthorFooter !== false && (
+                {showAuthorFooter && (
                     <div className="gm-card-footer gm-skeleton-footer">
                         <div className="gm-skeleton-avatar" />
                         <div className="gm-skeleton-lines">
