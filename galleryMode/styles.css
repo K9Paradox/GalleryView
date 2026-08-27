@@ -602,8 +602,6 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     flex-direction: column;
     cursor: pointer;
     will-change: transform, box-shadow;
-    content-visibility: auto;
-    contain-intrinsic-size: 240px 320px;
     transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
                 box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1),
                 border-color 0.2s ease;
@@ -1390,6 +1388,7 @@ video.gm-modal-media {
    and still saves work, because the card's box size is now known up front. */
 .gm-media-grid.gm-masonry .gm-media-card {
     contain: paint style;
+    content-visibility: visible !important;
 }
 
 /* ==========================================================================
@@ -1440,6 +1439,21 @@ video.gm-modal-media {
 @keyframes gmShimmer {
     from { background-position: 140% 0; }
     to   { background-position: -40% 0; }
+}
+
+/* Light theme overrides for skeleton shimmer contrast */
+.gm-theme-light .gm-skeleton-preview,
+.gm-theme-light .gm-skeleton-avatar,
+.gm-theme-light .gm-skeleton-line {
+    background-color: rgba(0, 0, 0, 0.05) !important;
+    background-image: linear-gradient(
+        100deg,
+        rgba(0, 0, 0, 0) 20%,
+        rgba(0, 0, 0, 0.04) 42%,
+        rgba(0, 0, 0, 0.08) 50%,
+        rgba(0, 0, 0, 0.04) 58%,
+        rgba(0, 0, 0, 0) 80%
+    ) !important;
 }
 
 .gm-skeleton-footer {
