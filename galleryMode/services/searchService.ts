@@ -83,15 +83,43 @@ export class SearchService {
      * List threads under a channel, including ones the user has never opened.
      *
      * The client store only holds *active joined* threads, so a picker built from it shows
-     * almost nothing in a busy forum. Discord exposes the full set over REST:
+     * almost nothing in a busy forum or server. Discord exposes the full set over REST:
+     *   - /guilds/:id/threads/active covers all active threads across the server
      *   - /channels/:id/threads/search covers active + archived for forum/media channels
-     *   - /channels/:id/threads/archived/public is the fallback for text channels
+     *   - /channels/:id/threads/archived/public and /archived/private for text channels
      * Results are cached for the session; failures degrade to whatever the store knows.
      */
     private static threadListCache = new Map<string, { timestamp: number; threads: any[]; }>();
+    private static guildActiveThreadsCache = new Map<string, { timestamp: number; threads: any[]; }>();
     private static readonly THREAD_CACHE_TTL_MS = 2 * 60 * 1000;
 
-    public static async listThreads(channelId: string): Promise<any[]> {
+    public static async listGuildActiveThreads(guildId: string): Promise<any[]> {
+        if (!guildId) return [];
+        const cached = this.guildActiveThreadsCache.get(guildId);
+        if (cached && Date.now() - cached.timestamp <= this.THREAD_CACHE_TTL_MS) return cached.threads;
+
+        const collected: any[] = [];
+        try {
+            await this.enforceRequestSpacing();
+            const response: any = await RestAPI.get({
+                url: `/guilds/${guildId}/threads/active`,
+                oldFormErrors: true
+            });
+            const data = response?.body ?? response;
+            const threadList = Array.isArray(data?.threads) ? data.threads : Array.isArray(data) ? data : [];
+            for (const thread of threadList) {
+                if (thread?.id) collected.push(thread);
+            }
+        } catch {
+            // Non-fatal — fall back to store data.
+        }
+
+        this.guildActiveThreadsCache.set(guildId, { timestamp: Date.now(), threads: collected });
+        return collected;
+    }
+
+    public static async listThreads(channelId: string, guildId?: string): Promise<any[]> {
+        if (!channelId) return [];
         const cached = this.threadListCache.get(channelId);
         if (cached && Date.now() - cached.timestamp <= this.THREAD_CACHE_TTL_MS) return cached.threads;
 
@@ -102,30 +130,113 @@ export class SearchService {
             }
         };
 
-        // Forum/media channels: the thread *search* endpoint returns active and archived posts.
+        // 1. Guild-level active threads matching this channel
+        if (guildId) {
+            try {
+                const guildThreads = await this.listGuildActiveThreads(guildId);
+                for (const thread of guildThreads) {
+                    if (thread?.parent_id === channelId && thread?.id) {
+                        collected.set(thread.id, thread);
+                    }
+                }
+            } catch {
+                // Ignore
+            }
+        }
+
+        // 2. Forum/media channels: active and archived threads via search endpoint
+        let isForum = false;
         try {
             await this.enforceRequestSpacing();
             const response: any = await RestAPI.get({
                 url: `/channels/${channelId}/threads/search`,
-                query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 25 },
+                query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
                 oldFormErrors: true
             });
-            absorb((response?.body ?? response)?.threads);
+            const threads = (response?.body ?? response)?.threads;
+            if (Array.isArray(threads)) {
+                isForum = true;
+                absorb(threads);
+            }
         } catch {
-            // Not a forum, or no permission — the archived endpoint below may still work.
+            // Not a forum, or permission denied
         }
 
-        // Text/announcement channels: public archived threads.
+        if (isForum) {
+            // Fetch archived forum posts as well
+            try {
+                await this.enforceRequestSpacing();
+                const archivedResponse: any = await RestAPI.get({
+                    url: `/channels/${channelId}/threads/search`,
+                    query: { archived: true, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
+                    oldFormErrors: true
+                });
+                absorb((archivedResponse?.body ?? archivedResponse)?.threads);
+            } catch {
+                // Ignore archived fetch error
+            }
+        }
+
+        // 3. Text/announcement channels: public archived threads
         try {
             await this.enforceRequestSpacing();
             const response: any = await RestAPI.get({
                 url: `/channels/${channelId}/threads/archived/public`,
-                query: { limit: 25 },
+                query: { limit: 100 },
                 oldFormErrors: true
             });
-            absorb((response?.body ?? response)?.threads);
+            const data = response?.body ?? response;
+            absorb(data?.threads);
+
+            // Fetch an additional page of archived threads if more exist
+            if (data?.has_more && Array.isArray(data?.threads) && data.threads.length > 0) {
+                const last = data.threads[data.threads.length - 1];
+                const before = last?.thread_metadata?.archive_timestamp || last?.id;
+                if (before) {
+                    try {
+                        await this.enforceRequestSpacing();
+                        const page2: any = await RestAPI.get({
+                            url: `/channels/${channelId}/threads/archived/public`,
+                            query: { limit: 100, before },
+                            oldFormErrors: true
+                        });
+                        absorb((page2?.body ?? page2)?.threads);
+                    } catch {
+                        // Ignore page 2 error
+                    }
+                }
+            }
         } catch {
-            // Fine — fall back to whatever the client store knows.
+            // Fine — fall back to other sources
+        }
+
+        // 4. Private archived threads
+        try {
+            await this.enforceRequestSpacing();
+            const privateResponse: any = await RestAPI.get({
+                url: `/channels/${channelId}/threads/archived/private`,
+                query: { limit: 100 },
+                oldFormErrors: true
+            });
+            absorb((privateResponse?.body ?? privateResponse)?.threads);
+        } catch {
+            // Private threads may not be available or permitted
+        }
+
+        // 5. Check in-memory channels from ChannelStore
+        try {
+            if (ChannelStore && typeof (ChannelStore as any).getChannels === "function" && guildId) {
+                const map = (ChannelStore as any).getChannels(guildId);
+                const values = Array.isArray(map) ? map : typeof map === "object" && map ? Object.values(map) : [];
+                for (const entry of values) {
+                    const c = (entry as any)?.channel || entry;
+                    if (c?.parent_id === channelId && c?.id) {
+                        collected.set(c.id, c);
+                    }
+                }
+            }
+        } catch {
+            // Store inspection fallback
         }
 
         const threads = [...collected.values()];
@@ -135,6 +246,7 @@ export class SearchService {
 
     public static resetNegativeCache(): void {
         this.threadListCache.clear();
+        this.guildActiveThreadsCache.clear();
         this.emptyStreams.clear();
         this.rawResponseCache.clear();
     }
@@ -289,7 +401,62 @@ export class SearchService {
         ].join("|");
     }
 
+    private static readonly MAX_CHANNELS_PER_QUERY = 25;
+
     private static async executeSingleSearchRequest(
+        params: SearchParameters,
+        hasType: DiscordSearchHasType
+    ): Promise<SearchResult> {
+        if (params.guildId && params.channelIds && params.channelIds.length > this.MAX_CHANNELS_PER_QUERY) {
+            // Discord rejects query strings with too many channel_id parameters (400 Bad Request / Request Header Too Large).
+            // Chunk channelIds into batches of at most MAX_CHANNELS_PER_QUERY and combine their results.
+            const chunks: string[][] = [];
+            for (let i = 0; i < params.channelIds.length; i += this.MAX_CHANNELS_PER_QUERY) {
+                chunks.push(params.channelIds.slice(i, i + this.MAX_CHANNELS_PER_QUERY));
+            }
+
+            const results = await Promise.all(
+                chunks.map(chunk => this.executeDirectSearchRequest({ ...params, channelIds: chunk }, hasType))
+            );
+
+            // Merge items and deduplicate
+            const seen = new Set<string>();
+            const mergedItems: MediaItem[] = [];
+            let totalResults = 0;
+
+            for (const res of results) {
+                totalResults += res.totalResults;
+                for (const item of res.items) {
+                    if (!seen.has(item.id)) {
+                        seen.add(item.id);
+                        mergedItems.push(item);
+                    }
+                }
+            }
+
+            // Sort merged items by timestamp according to sortOrder
+            mergedItems.sort((a, b) => {
+                const timeA = new Date(a.timestamp).getTime() || 0;
+                const timeB = new Date(b.timestamp).getTime() || 0;
+                return params.sortOrder === "asc" ? timeA - timeB : timeB - timeA;
+            });
+
+            const limit = params.limit || 25;
+            const items = mergedItems.slice(0, limit);
+            const hasMore = mergedItems.length > limit || results.some(r => r.hasMore);
+
+            return {
+                items,
+                totalResults,
+                hasMore,
+                nextOffset: (params.offset || 0) + items.length
+            };
+        }
+
+        return this.executeDirectSearchRequest(params, hasType);
+    }
+
+    private static async executeDirectSearchRequest(
         params: SearchParameters,
         hasType: DiscordSearchHasType
     ): Promise<SearchResult> {

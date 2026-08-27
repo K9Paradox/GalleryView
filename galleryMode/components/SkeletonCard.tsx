@@ -15,6 +15,37 @@ function fallbackRatio(index: number) {
     return table[index % table.length];
 }
 
+export interface SkeletonCardProps {
+    index: number;
+    ratio: number;
+    showAuthorFooter: boolean;
+}
+
+export function SkeletonCard({ index, ratio, showAuthorFooter }: SkeletonCardProps) {
+    return (
+        <div
+            className="gm-media-card gm-skeleton-card"
+            aria-hidden="true"
+            // Cap the stagger so a 25-card page doesn't take 2s to finish appearing.
+            style={{ animationDelay: `${Math.min(index, 12) * 28}ms` }}
+        >
+            <div
+                className="gm-media-preview-wrapper gm-skeleton-preview"
+                style={{ "--gm-item-ratio": `${Math.min(Math.max(ratio, 0.4), 3)}` } as React.CSSProperties}
+            />
+            {showAuthorFooter && (
+                <div className="gm-card-footer gm-skeleton-footer">
+                    <div className="gm-skeleton-avatar" />
+                    <div className="gm-skeleton-lines">
+                        <div className="gm-skeleton-line gm-skeleton-line-wide" />
+                        <div className="gm-skeleton-line gm-skeleton-line-narrow" />
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /**
  * Fake page shown while the real one is in flight. Cards fade in with a staggered shimmer so the
  * gallery keeps its shape and the user never sees a blank "Loading…" screen. The boxes are sized
@@ -34,27 +65,12 @@ export function SkeletonGrid({ count, ratios }: SkeletonGridProps) {
         const ratio = ratios?.length ? ratios[i % ratios.length] : fallbackRatio(i);
 
         cards.push(
-            <div
+            <SkeletonCard
                 key={i}
-                className="gm-media-card gm-skeleton-card"
-                aria-hidden="true"
-                // Cap the stagger so a 25-card page doesn't take 2s to finish appearing.
-                style={{ animationDelay: `${Math.min(i, 12) * 28}ms` }}
-            >
-                <div
-                    className="gm-media-preview-wrapper gm-skeleton-preview"
-                    style={{ "--gm-item-ratio": `${Math.min(Math.max(ratio, 0.4), 3)}` } as React.CSSProperties}
-                />
-                {showAuthorFooter && (
-                    <div className="gm-card-footer gm-skeleton-footer">
-                        <div className="gm-skeleton-avatar" />
-                        <div className="gm-skeleton-lines">
-                            <div className="gm-skeleton-line gm-skeleton-line-wide" />
-                            <div className="gm-skeleton-line gm-skeleton-line-narrow" />
-                        </div>
-                    </div>
-                )}
-            </div>
+                index={i}
+                ratio={ratio}
+                showAuthorFooter={showAuthorFooter}
+            />
         );
     }
 
