@@ -256,47 +256,43 @@ function getThreadActivityTimestamp(thread: any): number {
     return 0;
 }
 
-function useSegmentedIndicator(
-    activeKey: any,
+function useSegmentedControl(
     containerRef: React.RefObject<HTMLDivElement | null>,
+    activeKey: any,
     isMultiSelect = false
-): React.CSSProperties {
-    const [style, setStyle] = useState<React.CSSProperties>({
-        transform: "translateX(0px)",
-        width: 0,
-        opacity: 0
-    });
+): React.RefObject<HTMLDivElement | null> {
+    const indicatorRef = useRef<HTMLDivElement>(null);
 
     React.useLayoutEffect(() => {
+        const container = containerRef.current;
+        const indicator = indicatorRef.current;
+        if (!container || !indicator) return;
+
         if (isMultiSelect) {
-            setStyle({ transform: "translateX(0px)", width: 0, opacity: 0 });
+            indicator.style.opacity = "0";
             return;
         }
 
         const update = () => {
-            const container = containerRef.current;
-            if (!container) return;
             const activeEl = container.querySelector<HTMLElement>(".active");
             if (activeEl) {
                 const left = activeEl.offsetLeft;
                 const width = activeEl.offsetWidth;
-                setStyle({
-                    transform: `translateX(${left}px)`,
-                    width: `${width}px`,
-                    opacity: 1
-                });
+                indicator.style.transform = `translate3d(${left}px, 0, 0)`;
+                indicator.style.width = `${width}px`;
+                indicator.style.opacity = "1";
             } else {
-                setStyle(prev => ({ ...prev, opacity: 0 }));
+                indicator.style.opacity = "0";
             }
         };
 
         update();
         const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
-        if (containerRef.current && ro) ro.observe(containerRef.current);
+        if (ro) ro.observe(container);
         return () => { ro?.disconnect(); };
     }, [activeKey, isMultiSelect, containerRef]);
 
-    return style;
+    return indicatorRef;
 }
 
 // Discord calls the collapsible groups in a server's channel list "categories" (channel
@@ -486,9 +482,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const inThread = isThreadChannel(currentChannel);
     const threadParentId: string | undefined = inThread ? currentChannel?.parent_id : undefined;
     const threadParentChannel = threadParentId ? ChannelStore?.getChannel(threadParentId) : null;
-    // The channel whose threads we enumerate: the thread's parent, or the forum itself when
-    // the user is looking at the forum channel rather than an individual post.
-    const threadHostChannel = threadParentChannel ?? (isThreadParentChannel(currentChannel) ? currentChannel : null);
+    // The channel whose threads we enumerate: the thread's parent, or the current channel itself (text channel, forum, etc.)
+    const threadHostChannel = threadParentChannel ?? (currentChannel ? currentChannel : null);
     const threadHostId: string | undefined = threadHostChannel?.id;
     const liveSessionKey = `${channelId || "nochan"}_${guildId || "noguild"}`;
 
@@ -600,10 +595,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const densityToggleRef = useRef<HTMLDivElement>(null);
     const viewModeToggleRef = useRef<HTMLDivElement>(null);
 
-    const scopeIndicatorStyle = useSegmentedIndicator(scope, scopeToggleRef);
-    const filterIndicatorStyle = useSegmentedIndicator(filterType, filterTabsRef, selectedTypes.length > 1);
-    const densityIndicatorStyle = useSegmentedIndicator(cardMinWidth, densityToggleRef);
-    const viewModeIndicatorStyle = useSegmentedIndicator(effectiveViewMode, viewModeToggleRef);
+    const scopeIndicatorRef = useSegmentedControl(scopeToggleRef, scope);
+    const filterIndicatorRef = useSegmentedControl(filterTabsRef, filterType, selectedTypes.length > 1);
+    const densityIndicatorRef = useSegmentedControl(densityToggleRef, cardMinWidth);
+    const viewModeIndicatorRef = useSegmentedControl(viewModeToggleRef, effectiveViewMode);
     const authorInputRef = useRef<HTMLDivElement>(null);
     const scrollingTimerRef = useRef<number | null>(null);
     const dockReservationRef = useRef<HTMLElement | null>(null);
@@ -1189,20 +1184,18 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         if (scope === "parent") {
             // When specific threads are chosen, scope strictly to them.
-            // When no specific threads are chosen (default "all threads/posts"), scoping to
-            // threadHostId instructs Discord to search the host channel and all its subthreads natively
-            // in a single compact parameter, without blowing up the query string with hundreds of IDs.
+            // When no specific threads are chosen (default "all threads/posts"):
+            // If subthreads are loaded, search across all subthread IDs.
+            // If host channel has no threads or is a forum, query the host channel.
             let ids: string[];
             if (selectedThreadIds.length > 0) {
                 ids = [...selectedThreadIds];
+            } else if (threadChannelIds.length > 0) {
+                ids = [...threadChannelIds];
             } else if (threadHostId) {
                 ids = [threadHostId];
             } else {
-                ids = threadChannelIds.slice();
-            }
-
-            if (threadHostId && !isThreadParentChannel(threadHostChannel) && !ids.includes(threadHostId)) {
-                ids.push(threadHostId);
+                ids = [];
             }
 
             scopedChannelIds = ids.length > 0
@@ -2103,7 +2096,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
                     <div className="gm-header-controls">
                         <div className="gm-scope-toggle" ref={scopeToggleRef} role="group" aria-label="Search scope">
-                            <div className="gm-segmented-indicator" style={scopeIndicatorStyle} aria-hidden="true" />
+                            <div className="gm-segmented-indicator" ref={scopeIndicatorRef} aria-hidden="true" />
                             <button
                                 className={`gm-scope-btn gm-icon-only ${scope === "channel" ? "active" : ""}`}
                                 title={`Scope: ${defaultScopeLabel}`}
@@ -2336,7 +2329,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         role="group"
                         aria-label="Media type filter"
                     >
-                        <div className="gm-segmented-indicator" style={filterIndicatorStyle} aria-hidden="true" />
+                        <div className="gm-segmented-indicator" ref={filterIndicatorRef} aria-hidden="true" />
                         {FILTER_TABS.map(({ tab, label, icon }) => {
                             const isMulti = selectedTypes.length > 1;
                             const active = isMulti ? selectedTypes.includes(tab) : filterType === tab;
@@ -2357,7 +2350,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     </div>
 
                     <div className="gm-scope-toggle" ref={densityToggleRef} role="group" aria-label="Grid density" title="Grid density">
-                        <div className="gm-segmented-indicator" style={densityIndicatorStyle} aria-hidden="true" />
+                        <div className="gm-segmented-indicator" ref={densityIndicatorRef} aria-hidden="true" />
                         {DENSITY_OPTIONS.map(size => (
                             <button
                                 key={size.value}
@@ -2372,7 +2365,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     </div>
 
                     <div className="gm-scope-toggle gm-window-toggle" ref={viewModeToggleRef} role="group" aria-label="Gallery window mode" title="Gallery window mode">
-                        <div className="gm-segmented-indicator" style={viewModeIndicatorStyle} aria-hidden="true" />
+                        <div className="gm-segmented-indicator" ref={viewModeIndicatorRef} aria-hidden="true" />
                         {VIEW_MODE_OPTIONS.map(option => (
                             <button
                                 key={option.value}
