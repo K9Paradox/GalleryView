@@ -12,8 +12,12 @@ function luminance(r: number, g: number, b: number) {
 }
 
 function parseColor(value: string): [number, number, number] | null {
-    const rgb = value.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
-    if (rgb) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+    const rgb = value.match(/rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,]+([\d.]+))?/i);
+    if (rgb) {
+        // If the color is fully transparent, ignore it so we can find a solid underlying color candidate
+        if (rgb[4] !== undefined && Number(rgb[4]) === 0) return null;
+        return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+    }
 
     const hex = value.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
     if (hex) {

@@ -174,6 +174,22 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     const src = firstSafeMediaUrl(item.proxyUrl, item.url);
     const title = item.filename || item.embedTitle || "Media Preview";
 
+    React.useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            const key = e.key.toLowerCase();
+            if (key === "c" && !e.altKey) {
+                copyWithToast(item.url, "Copied media link!");
+            } else if (key === "d" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                downloadMedia(item.url, item.filename || "media");
+            } else if (key === "o" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                openExternal(item.url);
+            }
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [item]);
+
     return (
         <ModalRoot {...modalProps} size={ModalSize.DYNAMIC} className="gm-modal-root">
             <ModalHeader className="gm-modal-header">
@@ -509,11 +525,9 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                     </div>
                 ) : item.type === "video" && videoSrc ? (
                     <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                        {!mediaLoaded && (
-                            <div className="gm-media-skeleton">
-                                <div className="gm-spinner-icon" />
-                            </div>
-                        )}
+                        <div className={`gm-media-skeleton ${mediaLoaded ? "loaded" : ""}`}>
+                            <div className="gm-spinner-icon" />
+                        </div>
                         <video
                             ref={videoRef}
                             src={videoSrc}
@@ -543,11 +557,9 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                     </div>
                 ) : (
                     <>
-                        {!mediaLoaded && (
-                            <div className="gm-media-skeleton">
-                                <div className="gm-spinner-icon" />
-                            </div>
-                        )}
+                        <div className={`gm-media-skeleton ${mediaLoaded ? "loaded" : ""}`}>
+                            <div className="gm-spinner-icon" />
+                        </div>
                         {/* `loading="lazy"` is back, but the two things that previously broke it
                             are gone: the blur filter no longer sits on every image, and cards are
                             no longer each promoted to their own compositor layer. Without lazy,

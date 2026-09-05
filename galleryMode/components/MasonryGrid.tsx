@@ -7,8 +7,9 @@ interface MasonryGridProps {
     columnWidth: number;
     gap?: number;
     renderItem: (item: MediaItem) => React.ReactNode;
-    /** Extra nodes (skeleton placeholders) appended after the real items. */
-    trailing?: React.ReactNode;
+    trailingCount?: number;
+    trailingRatios?: number[];
+    renderTrailing?: (index: number, ratio: number) => React.ReactNode;
 }
 
 const DEFAULT_GAP = 16;
@@ -19,6 +20,11 @@ const FALLBACK_RATIO = 4 / 3;
 // Rough card chrome height (footer + borders) in units of column width. Only relative
 // accuracy matters — it just biases the packer so short cards aren't treated as free.
 const FOOTER_UNITS = 0.24;
+
+function fallbackRatio(index: number) {
+    const table = [1, 1.33, 0.75, 1, 1.5, 0.8, 1.2, 1];
+    return table[index % table.length];
+}
 
 /**
  * Masonry that preserves reading order.
@@ -32,7 +38,7 @@ const FOOTER_UNITS = 0.24;
  * currently shortest. Reading left-to-right, top-to-bottom now follows the sort order closely
  * while still producing a balanced, gap-free layout.
  */
-export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem, trailing }: MasonryGridProps) {
+export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem, trailingCount, trailingRatios, renderTrailing }: MasonryGridProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     // Measured synchronously below before first paint. Mounting at 1 column made the grid
     // several times taller than its real height for a frame or two, which clamped scroll
@@ -76,7 +82,13 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
     const columns = React.useMemo(() => {
         // Not measured yet — render nothing rather than a tall single column.
         if (columnCount < 1) return [];
-        const buckets: MediaItem[][] = Array.from({ length: columnCount }, () => []);
+
+        interface ColumnElement {
+            type: "item" | "trailing";
+            data: any;
+        }
+
+        const buckets: ColumnElement[][] = Array.from({ length: columnCount }, () => []);
         // Height is tracked in "column width" units so it stays resolution independent.
         const heights = new Array(columnCount).fill(0);
 
@@ -89,21 +101,41 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
                 if (heights[i] < heights[shortest]) shortest = i;
             }
 
-            buckets[shortest].push(item);
+            buckets[shortest].push({ type: "item", data: item });
             // A card of aspect ratio r occupies 1/r of its width in height, plus the footer.
             heights[shortest] += 1 / ratio + footerUnits;
         }
 
+        if (trailingCount && trailingCount > 0) {
+            for (let i = 0; i < trailingCount; i++) {
+                const ratio = trailingRatios?.length ? trailingRatios[i % trailingRatios.length] : fallbackRatio(i);
+
+                let shortest = 0;
+                for (let j = 1; j < columnCount; j++) {
+                    if (heights[j] < heights[shortest]) shortest = j;
+                }
+
+                buckets[shortest].push({ type: "trailing", data: { index: i, ratio } });
+                heights[shortest] += 1 / ratio + footerUnits;
+            }
+        }
+
         return buckets;
-    }, [items, columnCount, footerUnits]);
+    }, [items, columnCount, footerUnits, trailingCount, trailingRatios]);
 
     return (
         <div ref={containerRef} className="gm-media-grid gm-masonry" style={{ gap }}>
             {columns.map((column, index) => (
                 <div className="gm-masonry-column" key={index} style={{ gap }}>
-                    {column.map(renderItem)}
-                    {/* Skeletons trail the last column so they read as "more coming". */}
-                    {index === columns.length - 1 && trailing}
+                    {column.map((element, elIndex) => {
+                        if (element.type === "item") {
+                            return renderItem(element.data as MediaItem);
+                        } else if (element.type === "trailing" && renderTrailing) {
+                            const t = element.data as { index: number; ratio: number };
+                            return renderTrailing(t.index, t.ratio);
+                        }
+                        return null;
+                    })}
                 </div>
             ))}
         </div>
