@@ -194,6 +194,19 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     transition: none !important;
 }
 
+/* Suspend expensive GPU backdrop filter compositing during active scrolling to maximize frame rates */
+.gm-gallery-overlay-container.gm-is-scrolling {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: var(--background-secondary-alt, var(--gm-surface-overlay)) !important;
+}
+
+/* In lightweight mode, avoid expensive backdrop filter entirely */
+.gm-lite.gm-gallery-overlay-container {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
 @keyframes gmFadeIn {
     from {
         opacity: 0;

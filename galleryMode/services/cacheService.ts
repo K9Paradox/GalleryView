@@ -254,4 +254,12 @@ export class CacheService {
             }
         }
     }
+
+    /**
+     * Complete teardown of both query cache and session states (used on plugin stop)
+     */
+    public static clearAll(): void {
+        this.cache.clear();
+        this.sessions.clear();
+    }
 }

@@ -18,7 +18,7 @@ import { settings } from "../settings";
 import { useThemeTone } from "../useThemeTone";
 import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
-import { GallerySortOrder, MediaItem, SearchParameters } from "../types";
+import { GallerySortOrder, MediaItem, RateLimitState, SearchParameters } from "../types";
 import { MediaCard } from "./MediaCard";
 import { MasonryGrid } from "./MasonryGrid";
 import { SkeletonGrid, SkeletonCard } from "./SkeletonCard";
@@ -67,6 +67,9 @@ const VIEW_MODE_OPTIONS = [
 function writeSetting(key: string, value: string | boolean) {
     try {
         (settings.store as any)[key] = value;
+        if (typeof (settings as any).save === "function") {
+            (settings as any).save();
+        }
     } catch (err) {
         console.warn("[GalleryMode] Could not update setting", key, err);
     }
@@ -500,7 +503,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // (Called unconditionally — a conditional hook would violate the rules of hooks. The
     // helper is always present in Vencord's webpack commons.)
     const channelId: string | undefined = useStateFromStores(
-        [SelectedChannelStore],
+        SelectedChannelStore ? [SelectedChannelStore] : [],
         () => SelectedChannelStore?.getChannelId()
     );
     const currentChannel = channelId ? ChannelStore?.getChannel(channelId) : null;
@@ -597,7 +600,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [afterDate, setAfterDate] = useState<string>(initialSession.afterDate || "");
     const [sortOrder, setSortOrder] = useState<GallerySortOrder>(initialSession.sortOrder || "desc");
     const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
-    const [rateLimitTick, setRateLimitTick] = useState<number>(0);
+    const [rateLimitState, setRateLimitState] = useState<RateLimitState>(() => SearchService.getRateLimitState());
     const [isScrolling, setIsScrolling] = useState<boolean>(false);
     const [dockWidth, setDockWidth] = useState<number>(() => readSavedDockWidth());
 
@@ -1043,28 +1046,65 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         if (!q || !UserStore) return [];
 
         try {
-            let users: any[] = [];
+            const MAX_SUGGESTIONS = 8;
+            const matched: any[] = [];
+            const selectedSet = new Set(selectedAuthors.map(author => author.id));
+
+            const isMatch = (user: any) => {
+                if (!user || selectedSet.has(user.id)) return false;
+                const username = user.username?.toLowerCase() || "";
+                const globalName = (user.globalName || user.global_name || "").toLowerCase();
+                return username.includes(q) || globalName.includes(q) || user.id === q;
+            };
 
             if (guildId && GuildMemberStore) {
-                const rawMembers = GuildMemberStore.getMembers(guildId) || [];
-                const members = Array.isArray(rawMembers) ? rawMembers : Object.values(rawMembers);
-                users = members.map((member: any) => UserStore.getUser(member.userId || member.user_id || member.id));
+                const rawMembers = GuildMemberStore.getMembers(guildId);
+                if (rawMembers) {
+                    if (Array.isArray(rawMembers)) {
+                        for (let i = 0; i < rawMembers.length; i++) {
+                            const member = rawMembers[i];
+                            const uid = member?.userId || member?.user_id || member?.id;
+                            if (!uid) continue;
+                            const user = UserStore.getUser(uid);
+                            if (isMatch(user)) {
+                                matched.push(user);
+                                if (matched.length >= MAX_SUGGESTIONS) return matched;
+                            }
+                        }
+                    } else {
+                        for (const key in rawMembers) {
+                            if (!Object.prototype.hasOwnProperty.call(rawMembers, key)) continue;
+                            const member = (rawMembers as any)[key];
+                            const uid = member?.userId || member?.user_id || member?.id || key;
+                            if (!uid) continue;
+                            const user = UserStore.getUser(uid);
+                            if (isMatch(user)) {
+                                matched.push(user);
+                                if (matched.length >= MAX_SUGGESTIONS) return matched;
+                            }
+                        }
+                    }
+                }
             } else if (currentChannel?.recipients?.length) {
                 // DMs / group DMs have no guild member list — suggest from the recipient list instead
                 // so the author filter still works there.
-                users = currentChannel.recipients.map((id: string) => UserStore.getUser(id));
-            } else if (Array.isArray(currentChannel?.rawRecipients) && currentChannel.rawRecipients.length) {
-                users = currentChannel.rawRecipients;
+                for (const id of currentChannel.recipients) {
+                    const user = UserStore.getUser(id);
+                    if (isMatch(user)) {
+                        matched.push(user);
+                        if (matched.length >= MAX_SUGGESTIONS) return matched;
+                    }
+                }
+            } else if (Array.isArray(currentChannel?.rawRecipients)) {
+                for (const user of currentChannel.rawRecipients) {
+                    if (isMatch(user)) {
+                        matched.push(user);
+                        if (matched.length >= MAX_SUGGESTIONS) return matched;
+                    }
+                }
             }
 
-            return users
-                .filter((user: any) => user && !selectedAuthors.some(author => author.id === user.id))
-                .filter((user: any) => {
-                    const username = user.username?.toLowerCase() || "";
-                    const globalName = (user.globalName || user.global_name || "").toLowerCase();
-                    return username.includes(q) || globalName.includes(q) || user.id === q;
-                })
-                .slice(0, 8);
+            return matched;
         } catch {
             return [];
         }
@@ -1687,13 +1727,20 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     };
 
     useEffect(() => {
-        // Only tick while a rate limit is actually active — otherwise this re-renders the whole
-        // gallery (and every card in it) once per second with zero visible benefit.
+        return SearchService.addRateLimitListener(state => {
+            setRateLimitState(state);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!rateLimitState.isRateLimited) return;
+        // Only run countdown interval while Discord has actively throttled us
         const interval = setInterval(() => {
-            if (SearchService.getRateLimitState().isRateLimited) setRateLimitTick(tick => tick + 1);
+            const current = SearchService.getRateLimitState();
+            setRateLimitState(current);
         }, 1000);
         return () => clearInterval(interval);
-    }, []);
+    }, [rateLimitState.isRateLimited]);
 
     // Focus the dialog on open so Esc-to-close works immediately. The Escape handler lives on
     // the overlay element itself (not window), so Escape inside an image/video modal opened from
@@ -1990,9 +2037,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         return () => observer.disconnect();
     }, [activeQuery, error, filterType, hasMore, loading, loadingMore, mediaItems.length, offset]);
 
-    const rateLimitState = SearchService.getRateLimitState();
     const retrySeconds = rateLimitState.isRateLimited ? Math.max(1, Math.ceil((rateLimitState.resetTimestamp - Date.now()) / 1000)) : 0;
-    void rateLimitTick;
 
     const authorMenuOpen = authorSuggestions.length > 0 && !authorMenuDismissed;
 
@@ -2183,11 +2228,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                 setThreadFilter("");
                                             }}
                                             title="Pick which threads to search"
+                                            aria-haspopup="dialog"
+                                            aria-expanded={showThreadDropdown}
+                                            aria-label="Pick which threads to search"
                                         >
                                             {selectedThreadIds.length > 0 ? `${selectedThreadIds.length} threads` : "Threads"} <GmIcon name="chevronDown" size={12} />
                                         </button>
                                         {showThreadDropdown && (
-                                            <div className="gm-channel-dropdown">
+                                            <div className="gm-channel-dropdown" role="region" aria-label="Sub threads picker">
                                                 <div className="gm-dropdown-title">
                                                     Sub threads in #{threadHostChannel?.name || "channel"} ({threadCategories.reduce((total, category) => total + category.threads.length, 0)} shown)
                                                 </div>
@@ -2275,11 +2323,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                                 setChannelFilter("");
                                             }}
                                             title="Pick which channels to search"
+                                            aria-haspopup="dialog"
+                                            aria-expanded={showChannelDropdown}
+                                            aria-label="Pick which channels to search"
                                         >
                                             {effectiveSelectedChannelIds.length > 0 ? `${effectiveSelectedChannelIds.length} channels` : "Channels"} <GmIcon name="chevronDown" size={12} />
                                         </button>
                                         {showChannelDropdown && (
-                                            <div className="gm-channel-dropdown">
+                                            <div className="gm-channel-dropdown" role="region" aria-label="Channels picker">
                                                 <div className="gm-dropdown-title">
                                                     Search specific channels ({channelCategories.reduce((total, category) => total + category.channels.length, 0)} channels shown)
                                                 </div>

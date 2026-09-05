@@ -4,6 +4,8 @@ import { React, useEffect, useState } from "@webpack/common";
 import { GalleryView, setGalleryDebug } from "./components/GalleryView";
 import { GalleryHeaderButton } from "./components/HeaderSearchBar";
 import { settings } from "./settings";
+import { CacheService } from "./services/cacheService";
+import { SearchService } from "./services/searchService";
 import { startThemeToneWatcher, stopThemeToneWatcher } from "./useThemeTone";
 import "./styles.css";
 
@@ -64,12 +66,12 @@ export default definePlugin({
     ],
     settings,
 
-    // Safe, single AST patch into Discord's header bar
+    // Safe, robust AST patch into Discord's header bar
     patches: [
         {
             find: '?"BACK_FORWARD_NAVIGATION":',
             replacement: {
-                match: /(trailing:.{0,50}?)\i\.Fragment,(?=\{children:\[)/,
+                match: /(trailing:\s*[\s\S]{0,100}?)\i\.Fragment\s*,\s*(?=\{[^}]*children\s*:\s*\[)/,
                 replace: "$1$self.renderHeaderButton,"
             }
         }
@@ -97,7 +99,20 @@ export default definePlugin({
 
     stop() {
         setGalleryActive(false);
+        listeners.clear();
         stopThemeToneWatcher();
+        CacheService.clearAll();
+        SearchService.clearAll();
+        if (typeof document !== "undefined") {
+            document.body.classList.remove("gm-resizing-dock");
+            const dockTargets = document.querySelectorAll<HTMLElement>("[data-gm-docked]");
+            for (const el of dockTargets) {
+                el.removeAttribute("data-gm-docked");
+                el.style.removeProperty("margin-right");
+                el.style.removeProperty("margin-left");
+                el.style.removeProperty("transition");
+            }
+        }
         console.log("[GalleryMode] Plugin stopped.");
     }
 });
