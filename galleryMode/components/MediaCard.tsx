@@ -109,6 +109,7 @@ async function downloadMedia(url: string, fallbackName: string) {
 
 interface MediaCardProps {
     item: MediaItem;
+    index?: number;
     onCloseGallery?: () => void;
     /** Called immediately before navigating away, so the gallery can snapshot its state. */
     onBeforeJump?: () => void;
@@ -230,7 +231,7 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     );
 }
 
-function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true, previewsPaused = false }: MediaCardProps) {
+function MediaCardImpl({ item, index = 0, onCloseGallery, onBeforeJump, closeOnJump = true, previewsPaused = false }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
@@ -252,6 +253,20 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
     const shouldBlur = (respectSpoilers !== false && item.isSpoiler) || (blurNsfwChannels === true && item.isNsfwChannel);
     const [revealed, setRevealed] = useState<boolean>(false);
     const isHidden = shouldBlur && !revealed;
+
+    const isPlayable = item.type === "video" || item.type === "gif";
+    // Never show the play button overlay when autoplay is active, so it doesn't obstruct playback
+    const showPlayButton = isPlayable && !isHidden && effectivePreview !== "animated" && !hasError;
+    const playModeClass = isPlayable
+        ? effectivePreview === "animated"
+            ? " gm-play-always"
+            : effectivePreview === "hover"
+            ? " gm-play-on-hover"
+            : " gm-play-on-click"
+        : "";
+
+    const isInitialViewport = (index ?? 0) < 8;
+    const isHighPriority = (index ?? 0) < 4;
 
     const videoRef = React.useRef<HTMLVideoElement>(null);
 
@@ -472,7 +487,7 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
 
     return (
         <div
-            className={`gm-media-card${isHidden ? " gm-media-card-hidden" : ""}`}
+            className={`gm-media-card${isHidden ? " gm-media-card-hidden" : ""}${playModeClass}`}
             onClick={handleCardClick}
             onContextMenu={handleContextMenu}
             onMouseEnter={() => setHovered(true)}
@@ -545,9 +560,6 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                                 setHasError(true);
                             }}
                         />
-                        <div className="gm-video-play-overlay">
-                            <div className="gm-play-button-circle">▶</div>
-                        </div>
                     </div>
                 ) : !displaySrc ? (
                     <div className="gm-file-card-preview">
@@ -560,25 +572,26 @@ function MediaCardImpl({ item, onCloseGallery, onBeforeJump, closeOnJump = true,
                         <div className={`gm-media-skeleton ${mediaLoaded ? "loaded" : ""}`}>
                             <div className="gm-spinner-icon" />
                         </div>
-                        {/* `loading="lazy"` is back, but the two things that previously broke it
-                            are gone: the blur filter no longer sits on every image, and cards are
-                            no longer each promoted to their own compositor layer. Without lazy,
-                            opening a 600-card gallery kicks off 600 simultaneous CDN fetches,
-                            which starves the visible ones — that made the hover symptom worse,
-                            not better. */}
                         <img
                             ref={markLoadedIfComplete}
-                            loading="lazy"
+                            loading={isInitialViewport ? "eager" : "lazy"}
+                            fetchPriority={isHighPriority ? "high" : "auto"}
                             src={displaySrc}
                             alt={item.filename || item.embedTitle || "Media"}
                             className={`gm-media-element ${mediaLoaded ? "loaded" : ""}`}
                             width={item.width}
                             height={item.height}
-                            decoding="async"
+                            decoding={isInitialViewport ? "sync" : "async"}
                             onLoad={() => setMediaLoaded(true)}
                             onError={handleMediaError}
                         />
                     </>
+                )}
+
+                {showPlayButton && (
+                    <div className="gm-video-play-overlay">
+                        <div className="gm-play-button-circle">▶</div>
+                    </div>
                 )}
 
                 {showMetaOverlay && item.timestamp && (

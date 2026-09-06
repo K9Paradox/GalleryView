@@ -638,6 +638,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const viewModeIndicatorRef = useSegmentedControl(viewModeToggleRef, effectiveViewMode);
     const authorInputRef = useRef<HTMLDivElement>(null);
     const scrollingTimerRef = useRef<number | null>(null);
+    const scrollPersistTimerRef = useRef<number | null>(null);
     const dockReservationRef = useRef<HTMLElement | null>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
@@ -1178,6 +1179,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
     }, [persistSession, sessionKey]);
 
+    const handleBeforeJumpCard = React.useCallback(() => {
+        handleBeforeJump(!isDocked);
+    }, [handleBeforeJump, isDocked]);
+
     const applySessionState = React.useCallback((session: GallerySessionState | null) => {
         const next = mergeSessionState(session, initialQuery, {
             cardSize: defaultCardSize || "240px",
@@ -1513,6 +1518,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             clearTimeout(scrollingTimerRef.current);
             scrollingTimerRef.current = null;
         }
+        if (scrollPersistTimerRef.current != null) {
+            clearTimeout(scrollPersistTimerRef.current);
+            scrollPersistTimerRef.current = null;
+        }
     }, []);
 
     useEffect(() => {
@@ -1709,7 +1718,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
         lastScrollTopRef.current = scrollTop;
         setShowScrollTop(scrollTop > 400);
-        persistSession(sessionKey, scrollTop);
+
+        // Debounce session persistence to avoid thrashing arrays and Maps 60-120fps during fast scrolls
+        if (scrollPersistTimerRef.current != null) {
+            clearTimeout(scrollPersistTimerRef.current);
+        }
+        scrollPersistTimerRef.current = window.setTimeout(() => {
+            scrollPersistTimerRef.current = null;
+            persistSession(sessionKey, scrollTop);
+        }, 150);
 
         // Safety net for fast scrolling. IntersectionObserver only fires when intersection
         // *changes*; if the user flings the list and the sentinel is already on screen when a
@@ -2621,14 +2638,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                         <MasonryGrid
                             items={loading ? [] : mediaItems}
                             columnWidth={adaptiveColumnWidth}
-                            renderItem={item => (
+                            renderItem={(item, index) => (
                                 <MediaCard
                                     key={item.id}
                                     item={item}
+                                    index={index}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
+                                    onBeforeJump={handleBeforeJumpCard}
                                     closeOnJump={!isDocked}
-                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             )}
                             trailingCount={showSkeletons ? skeletonCount : 0}
@@ -2651,14 +2668,14 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                 "--gm-col-width": adaptiveCardMinWidthPx
                             } as React.CSSProperties}
                         >
-                            {!loading && mediaItems.map(item => (
+                            {!loading && mediaItems.map((item, index) => (
                                 <MediaCard
                                     key={item.id}
                                     item={item}
+                                    index={index}
                                     onCloseGallery={onClose}
-                                    onBeforeJump={() => handleBeforeJump(!isDocked)}
+                                    onBeforeJump={handleBeforeJumpCard}
                                     closeOnJump={!isDocked}
-                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
                                 />
                             ))}
                             {showSkeletons && (
