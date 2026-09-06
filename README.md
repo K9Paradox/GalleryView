@@ -51,7 +51,7 @@ It runs entirely on Discord's native `/messages/search` endpoint. Nothing is scr
 - **Four densities** — Compact, Standard, Large and Showcase.
 - **Infinite scroll** with preset-aware background prefetch, so Balanced and Pretty feel instant while Low-end avoids extra work.
 - **Docked split-screen mode** can pin the gallery to the left or right, reserve room for chat when Discord's layout can be safely detected, switch directly from the gallery header, and resize by dragging the dock edge.
-- **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message (Low-end disables cross-session memory).
+- **Session memory** — filters, scroll depth and results are restored when you reopen a channel's gallery, including after jumping to a message (configurable via Session Memory setting).
 
 ### Per-item actions
 

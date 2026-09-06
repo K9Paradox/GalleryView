@@ -566,10 +566,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         sortOrder: (defaultSortOrder as GallerySortOrder) || "desc"
     };
 
-    // `rememberSessions` off (or lightweight mode) means always start from the configured defaults.
+    // `rememberSessions` off means always start from the configured defaults.
     const initialSession = mergeSessionState(
         // A resumed session is always restored, even with session memory off — see persistSession.
-        (rememberSessions === false || lite) && !resumeKeyRef.current ? null : CacheService.getSession(sessionKey),
+        rememberSessions === false && !resumeKeyRef.current ? null : CacheService.getSession(sessionKey),
         initialQuery,
         sessionDefaults
     );
@@ -1122,12 +1122,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         scrollTop = lastScrollTopRef.current,
         { force = false }: { force?: boolean; } = {}
     ) => {
-        // Honour the "don't remember sessions" preference (and lightweight mode's position-memory
-        // cut) at the write side too, so nothing is left behind to restore later. `force`
-        // overrides it for the jump-and-return round trip: that setting means "don't carry state
-        // between visits", not "lose my place when I click Jump", and the entry is consumed
-        // immediately on return.
-        if ((rememberSessions === false || lite) && !force) return;
+        // Honour the "don't remember sessions" preference at the write side too, so nothing
+        // is left behind to restore later. `force` overrides it for the jump-and-return round
+        // trip: that setting means "don't carry state between visits", not "lose my place when
+        // I click Jump", and the entry is consumed immediately on return.
+        if (rememberSessions === false && !force) return;
 
         // Once the jump snapshot is taken the session is sealed. Everything that runs during
         // teardown (the state-change effect, the unmount cleanup) would otherwise write over it
@@ -1829,8 +1828,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         persistSession(lastSessionKeyRef.current, scrollContainerRef.current?.scrollTop || 0);
         isHydratingSessionRef.current = true;
         lastSessionKeyRef.current = sessionKey;
-        applySessionState((rememberSessions === false || lite) ? null : CacheService.getSession(sessionKey));
-    }, [applySessionState, lite, persistSession, rememberSessions, sessionKey]);
+        applySessionState(rememberSessions === false ? null : CacheService.getSession(sessionKey));
+    }, [applySessionState, persistSession, rememberSessions, sessionKey]);
 
     /**
      * Restore the saved scroll position.
