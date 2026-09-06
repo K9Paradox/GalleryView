@@ -16,7 +16,9 @@
    and third-party themes too, not just the built-in Light theme.
    ========================================================================== */
 
-.gm-gallery-overlay-container {
+:root,
+.gm-gallery-overlay-container,
+.gm-modal-root {
     /* Surfaces */
     --gm-surface-overlay: rgba(18, 19, 23, 0.96);
     --gm-surface-header: rgba(10, 11, 14, 0.95);
@@ -64,7 +66,8 @@
 
 /* Light palette. Inverted lines/fills (dark hairlines over light surfaces) and
    dark text, keeping the same structure so no rule needs a light-mode variant. */
-.gm-gallery-overlay-container.gm-theme-light {
+.gm-gallery-overlay-container.gm-theme-light,
+.theme-light .gm-modal-root {
     --gm-surface-overlay: rgba(255, 255, 255, 0.97);
     --gm-surface-header: rgba(243, 244, 246, 0.97);
     --gm-surface-card: rgba(255, 255, 255, 0.96);
@@ -192,6 +195,19 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
 /* Honor user performance preferences by disabling transitions in lightweight mode */
 .gm-motion-off.gm-gallery-overlay-container {
     transition: none !important;
+}
+
+/* Suspend expensive GPU backdrop filter compositing during active scrolling to maximize frame rates */
+.gm-gallery-overlay-container.gm-is-scrolling {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    background: var(--background-secondary-alt, var(--gm-surface-overlay)) !important;
+}
+
+/* In lightweight mode, avoid expensive backdrop filter entirely */
+.gm-lite.gm-gallery-overlay-container {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
 }
 
 @keyframes gmFadeIn {
@@ -727,7 +743,7 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     to { transform: rotate(360deg); }
 }
 
-/* Video Play Overlay */
+/* Video / GIF Play Overlay */
 .gm-video-play-overlay {
     position: absolute;
     z-index: 1;
@@ -737,10 +753,19 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     justify-content: center;
     background: rgba(0, 0, 0, 0.35);
     opacity: 0.85;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    pointer-events: none;
 }
 
-.gm-media-card:hover .gm-video-play-overlay {
+/* In hover play mode, fade out the play button on hover so the playing media is unobscured */
+.gm-media-card.gm-play-on-hover:hover .gm-video-play-overlay,
+.gm-media-card.gm-play-always .gm-video-play-overlay {
+    opacity: 0;
+    visibility: hidden;
+}
+
+/* In static / click mode, keep play button visible on hover */
+.gm-media-card.gm-play-on-click:hover .gm-video-play-overlay {
     opacity: 1;
 }
 
@@ -749,11 +774,11 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     height: 52px;
     border-radius: 50%;
     background: var(--brand-experiment, #5865f2) !important;
-    color: var(--gm-text-strong) !important;
+    color: var(--gm-text-strong, #ffffff) !important;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 16px var(--gm-scrim-strong);
+    box-shadow: 0 4px 16px var(--gm-scrim-strong, rgba(0, 0, 0, 0.6));
     transition: transform 0.15s ease;
 }
 
@@ -1247,6 +1272,11 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
 
 .gm-modal-root {
     max-width: min(95vw, 1200px) !important;
+    background: var(--gm-surface-overlay, #121317) !important;
+    border: 1px solid var(--gm-line-soft, rgba(255, 255, 255, 0.1)) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 24px 64px var(--gm-shadow, rgba(0, 0, 0, 0.7)) !important;
+    overflow: hidden !important;
 }
 
 .gm-modal-header {
@@ -1255,11 +1285,13 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     justify-content: space-between;
     gap: 12px;
     padding: 14px 16px !important;
-    border-bottom: 1px solid var(--gm-line-softer);
+    background: var(--gm-surface-header, #0a0b0e) !important;
+    border-bottom: 1px solid var(--gm-line-softer, rgba(255, 255, 255, 0.08)) !important;
 }
 
 .gm-modal-title {
-    color: var(--gm-text-strong) !important;
+    color: var(--gm-text-strong, #ffffff) !important;
+    font-size: 16px;
     font-weight: 800;
     overflow: hidden;
     white-space: nowrap;
@@ -1268,6 +1300,7 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
 
 .gm-modal-content {
     padding: 16px !important;
+    background: var(--gm-surface-overlay, #121317) !important;
 }
 
 .gm-modal-media {
@@ -1338,6 +1371,17 @@ video.gm-modal-media {
     justify-content: center;
     gap: 10px;
     margin-top: 14px;
+}
+
+.gm-modal-actions .gm-action-btn.secondary {
+    background: rgba(255, 255, 255, 0.1) !important;
+    color: var(--gm-text-strong, #ffffff) !important;
+    border: 1px solid var(--gm-line-strong, rgba(255, 255, 255, 0.2)) !important;
+}
+
+.gm-modal-actions .gm-action-btn.secondary:hover {
+    background: rgba(255, 255, 255, 0.18) !important;
+    color: #ffffff !important;
 }
 
 
@@ -2462,6 +2506,10 @@ body.gm-resizing-dock,
 body.gm-resizing-dock * {
     cursor: col-resize !important;
     user-select: none !important;
+}
+
+.gm-is-scrolling .gm-media-card {
+    pointer-events: none !important;
 }
 
 .gm-is-scrolling .gm-media-card,

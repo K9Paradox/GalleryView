@@ -251,6 +251,45 @@ export class SearchService {
         this.rawResponseCache.clear();
     }
 
+    private static rateLimitListeners = new Set<(state: RateLimitState) => void>();
+
+    public static addRateLimitListener(listener: (state: RateLimitState) => void): () => void {
+        this.rateLimitListeners.add(listener);
+        return () => this.rateLimitListeners.delete(listener);
+    }
+
+    private static notifyRateLimitListeners(): void {
+        const state = this.getRateLimitState();
+        this.rateLimitListeners.forEach(listener => {
+            try { listener(state); } catch {}
+        });
+    }
+
+    private static setRateLimit(retryMs: number): void {
+        this.onThrottled();
+        this.rateLimitState = {
+            isRateLimited: true,
+            retryAfterMs: retryMs,
+            resetTimestamp: Date.now() + retryMs
+        };
+        this.notifyRateLimitListeners();
+    }
+
+    private static clearRateLimit(): void {
+        this.rateLimitState = { isRateLimited: false, retryAfterMs: 0, resetTimestamp: 0 };
+        this.notifyRateLimitListeners();
+    }
+
+    public static clearAll(): void {
+        this.resetNegativeCache();
+        this.inFlightRequests.clear();
+        this.inFlightRaw.clear();
+        this.requestQueue = [];
+        this.isProcessingQueue = false;
+        this.rateLimitState = { isRateLimited: false, retryAfterMs: 0, resetTimestamp: 0 };
+        this.rateLimitListeners.clear();
+    }
+
     public static getRateLimitState(): RateLimitState {
         if (this.rateLimitState.isRateLimited && Date.now() >= this.rateLimitState.resetTimestamp) {
             this.rateLimitState = { isRateLimited: false, retryAfterMs: 0, resetTimestamp: 0 };
@@ -551,6 +590,9 @@ export class SearchService {
         queryParams: Record<string, any>,
         attempt: number
     ): Promise<DiscordSearchResponse> {
+        if (!RestAPI?.get) {
+            throw new Error("Discord RestAPI module is not available.");
+        }
         try {
             const response: any = await RestAPI.get({
                 url: endpoint,
@@ -564,14 +606,9 @@ export class SearchService {
             // Treat it as a transient loading state instead of surfacing a permanent error.
             if (responseData?.retry_after && !responseData?.messages && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(responseData.retry_after);
-                this.onThrottled();
-                this.rateLimitState = {
-                    isRateLimited: true,
-                    retryAfterMs: retryMs,
-                    resetTimestamp: Date.now() + retryMs
-                };
+                this.setRateLimit(retryMs);
                 await this.sleep(retryMs);
-                this.rateLimitState = { isRateLimited: false, retryAfterMs: 0, resetTimestamp: 0 };
+                this.clearRateLimit();
                 return this.requestDiscordSearch(endpoint, queryParams, attempt + 1);
             }
 
@@ -581,14 +618,9 @@ export class SearchService {
             const retryAfter = err?.body?.retry_after ?? err?.retry_after;
             if ((err?.status === 429 || retryAfter) && attempt < this.MAX_RETRIES) {
                 const retryMs = this.normaliseRetryAfter(retryAfter || 3);
-                this.onThrottled();
-                this.rateLimitState = {
-                    isRateLimited: true,
-                    retryAfterMs: retryMs,
-                    resetTimestamp: Date.now() + retryMs
-                };
+                this.setRateLimit(retryMs);
                 await this.sleep(retryMs);
-                this.rateLimitState = { isRateLimited: false, retryAfterMs: 0, resetTimestamp: 0 };
+                this.clearRateLimit();
                 return this.requestDiscordSearch(endpoint, queryParams, attempt + 1);
             }
 

@@ -6,7 +6,7 @@ interface MasonryGridProps {
     items: MediaItem[];
     columnWidth: number;
     gap?: number;
-    renderItem: (item: MediaItem) => React.ReactNode;
+    renderItem: (item: MediaItem, index: number) => React.ReactNode;
     trailingCount?: number;
     trailingRatios?: number[];
     renderTrailing?: (index: number, ratio: number) => React.ReactNode;
@@ -40,10 +40,12 @@ function fallbackRatio(index: number) {
  */
 export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem, trailingCount, trailingRatios, renderTrailing }: MasonryGridProps) {
     const containerRef = useRef<HTMLDivElement>(null);
-    // Measured synchronously below before first paint. Mounting at 1 column made the grid
-    // several times taller than its real height for a frame or two, which clamped scroll
-    // restoration to the wrong place.
-    const [columnCount, setColumnCount] = useState<number>(0);
+    // Seed column count synchronously from window width if available to avoid mounting at 0 height (CLS reduction)
+    const [columnCount, setColumnCount] = useState<number>(() => {
+        if (typeof window === "undefined") return 3;
+        const approxWidth = window.innerWidth * 0.75;
+        return Math.max(1, Math.floor((approxWidth + gap) / (columnWidth + gap)));
+    });
     // Cards are shorter without the author footer, so the packer must account for it or the
     // columns come out unbalanced. Card chrome is the human-facing setting that replaced the old
     // pair of separate badge/footer toggles: only the "Full" density keeps the footer.
@@ -92,7 +94,8 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
         // Height is tracked in "column width" units so it stays resolution independent.
         const heights = new Array(columnCount).fill(0);
 
-        for (const item of items) {
+        for (let idx = 0; idx < items.length; idx++) {
+            const item = items[idx];
             const rawRatio = item.width && item.height ? item.width / item.height : FALLBACK_RATIO;
             const ratio = Math.min(Math.max(rawRatio, RATIO_MIN), RATIO_MAX);
 
@@ -101,7 +104,7 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
                 if (heights[i] < heights[shortest]) shortest = i;
             }
 
-            buckets[shortest].push({ type: "item", data: item });
+            buckets[shortest].push({ type: "item", data: item, index: idx } as any);
             // A card of aspect ratio r occupies 1/r of its width in height, plus the footer.
             heights[shortest] += 1 / ratio + footerUnits;
         }
@@ -129,7 +132,7 @@ export function MasonryGrid({ items, columnWidth, gap = DEFAULT_GAP, renderItem,
                 <div className="gm-masonry-column" key={index} style={{ gap }}>
                     {column.map((element, elIndex) => {
                         if (element.type === "item") {
-                            return renderItem(element.data as MediaItem);
+                            return renderItem(element.data as MediaItem, (element as any).index ?? elIndex);
                         } else if (element.type === "trailing" && renderTrailing) {
                             const t = element.data as { index: number; ratio: number };
                             return renderTrailing(t.index, t.ratio);

@@ -14,6 +14,8 @@ export function GalleryIcon({ active }: { active: boolean }) {
     );
 }
 
+let cachedToolbarColor: string | null = null;
+
 /**
  * Copy the colour Discord is actually painting its own toolbar icons with.
  *
@@ -23,7 +25,7 @@ export function GalleryIcon({ active }: { active: boolean }) {
  * has already resolved for a neighbouring Discord icon — so we read it directly.
  */
 function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
-    const [color, setColor] = useState<string | null>(null);
+    const [color, setColor] = useState<string | null>(cachedToolbarColor);
 
     useEffect(() => {
         let cancelled = false;
@@ -54,6 +56,7 @@ function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
                     if (/rgba?\(\s*0[,\s]+0[,\s]+0\s*[,)]/.test(candidate)) continue;
                     if (/^rgba\(.*,\s*0\)$/.test(candidate)) continue;
 
+                    cachedToolbarColor = candidate;
                     if (!cancelled) setColor(candidate);
                     return true;
                 }
@@ -64,12 +67,15 @@ function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
             return false;
         };
 
+        // If we already have a cached color from a previous mount, try a single read and skip retries
+        if (cachedToolbarColor && read()) return;
+
         // Discord's own toolbar icons may not be mounted yet on the first paint, so retry on a
         // short backoff until one is found (or we give up and keep the CSS fallback).
         let retryTimer: number | null = null;
         const attempt = () => {
             if (cancelled || read()) return;
-            if (++attempts > 12) return;
+            if (++attempts > 8) return;
             retryTimer = window.setTimeout(attempt, 100 * attempts);
         };
         attempt();
