@@ -24,7 +24,7 @@ let cachedToolbarColor: string | null = null;
  * way a bare <svg> sibling does. The only thing guaranteed to match is the value the browser
  * has already resolved for a neighbouring Discord icon — so we read it directly.
  */
-function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement>) {
+function useToolbarIconColor(buttonRef: React.RefObject<HTMLButtonElement | null>) {
     const [color, setColor] = useState<string | null>(cachedToolbarColor);
 
     useEffect(() => {

@@ -4,6 +4,7 @@ import { ModalCloseButton, ModalContent, ModalHeader, ModalRoot, ModalSize, open
 import { ContextMenuApi, Menu, NavigationRouter, React, showToast, Toasts, useState } from "@webpack/common";
 import { settings } from "../settings";
 import { MediaItem } from "../types";
+import { isLikelyImageUrl } from "../utils/mediaExtractor";
 import { ICON_PATHS } from "./iconData";
 
 function isDiscordCdnHost(hostname: string): boolean {
@@ -16,15 +17,18 @@ function isDiscordCdnHost(hostname: string): boolean {
  * `format=webp` + `animated=false`; anything it doesn't recognise is returned unchanged, and a
  * non-proxy URL is passed through untouched.
  *
- * `allowCdn` (lightweight mode) extends the same treatment to cdn.discordapp.com attachment
- * URLs, which are fronted by the same media pipeline. If an edge case rejects the transform,
- * the card's retry-once fallback restores the untouched URL rather than erroring out.
+ * `allowCdn` extends the same treatment to cdn.discordapp.com attachment URLs by routing them
+ * through media.discordapp.net, which fronts the resizing/static-frame pipeline. If an edge case
+ * rejects the transform, the card's retry-once fallback restores the untouched URL.
  */
 function staticFrameUrl(url: string | undefined, allowCdn = false): string | undefined {
     if (!url) return url;
     try {
         const parsed = new URL(url);
         if (parsed.hostname !== "media.discordapp.net" && !(allowCdn && isDiscordCdnHost(parsed.hostname))) return url;
+        if (parsed.hostname === "cdn.discordapp.com" && parsed.pathname.startsWith("/attachments/")) {
+            parsed.hostname = "media.discordapp.net";
+        }
         parsed.searchParams.set("format", "webp");
         parsed.searchParams.set("animated", "false");
         return parsed.toString();
@@ -63,7 +67,7 @@ function CardIcon({ name, size = 14 }: { name: "copy" | "jump"; size?: number; }
 
 /**
  * Ask Discord's CDN for a downscaled rendition of an image. Width/height parameters are
- * honoured by the same media proxy pipeline that serves attachment and embed URLs, so a
+ * honoured by the media.discordapp.net proxy pipeline that serves attachment and embed URLs, so a
  * low-end gallery decodes tens of KB per card instead of multi-megabyte originals.
  * Non-Discord URLs pass through untouched.
  */
@@ -71,6 +75,9 @@ function downscaledThumbUrl(url: string, size: number): string {
     try {
         const parsed = new URL(url);
         if (!isDiscordCdnHost(parsed.hostname)) return url;
+        if (parsed.hostname === "cdn.discordapp.com" && parsed.pathname.startsWith("/attachments/")) {
+            parsed.hostname = "media.discordapp.net";
+        }
         parsed.searchParams.set("width", String(size));
         parsed.searchParams.set("height", String(size));
         return parsed.toString();
@@ -79,10 +86,13 @@ function downscaledThumbUrl(url: string, size: number): string {
     }
 }
 
+const TOAST_SUCCESS = (Toasts as any)?.Type?.SUCCESS ?? "success";
+const TOAST_FAILURE = (Toasts as any)?.Type?.FAILURE ?? "failure";
+
 function copyWithToast(text: string, toastMsg = "Copied to clipboard!") {
     void copyToClipboard(text)
-        .then(() => showToast(toastMsg, Toasts.Type.SUCCESS))
-        .catch(() => showToast("Failed to copy", Toasts.Type.FAILURE));
+        .then(() => showToast(toastMsg, TOAST_SUCCESS))
+        .catch(() => showToast("Failed to copy", TOAST_FAILURE));
 }
 
 async function downloadMedia(url: string, fallbackName: string) {
@@ -100,11 +110,20 @@ async function downloadMedia(url: string, fallbackName: string) {
         // Revoking immediately can abort the download before the browser has finished reading
         // the blob, which showed up as silently truncated files for larger media. Defer it.
         setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-        showToast("Downloaded media", Toasts.Type.SUCCESS);
+        showToast("Downloaded media", TOAST_SUCCESS);
     } catch (err) {
         console.warn("[GalleryMode] Download failed:", err);
-        showToast("Download failed — open in browser to save", Toasts.Type.FAILURE);
+        showToast("Download failed — open in browser to save", TOAST_FAILURE);
     }
+}
+
+export interface MediaCardSettings {
+    performanceProfile?: string;
+    previewBehavior?: string;
+    thumbnailQuality?: string;
+    respectSpoilers?: boolean;
+    blurNsfwChannels?: boolean;
+    cardChrome?: string;
 }
 
 interface MediaCardProps {
@@ -117,6 +136,8 @@ interface MediaCardProps {
     closeOnJump?: boolean;
     /** Temporarily pause hover previews while the parent gallery is actively scrolling. */
     previewsPaused?: boolean;
+    /** Hoisted settings from GalleryView so cards don't each register a settings listener. */
+    cardSettings?: MediaCardSettings;
 }
 
 function formatDate(isoString?: string) {
@@ -163,10 +184,6 @@ function firstSafeMediaUrl(...urls: Array<string | undefined>) {
     return urls.find(isCspSafeMediaUrl);
 }
 
-function isLikelyImageUrl(url?: string) {
-    return !!url && /\.(png|jpe?g|webp|gif|avif|bmp)(\?|$)/i.test(url);
-}
-
 function openExternal(url: string) {
     window.open(url, "_blank", "noopener,noreferrer");
 }
@@ -174,12 +191,16 @@ function openExternal(url: string) {
 function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: any; }) {
     const src = firstSafeMediaUrl(item.proxyUrl, item.url);
     const title = item.filename || item.embedTitle || "Media Preview";
+    const ModalRootComp = ModalRoot as any;
+    const ModalHeaderComp = ModalHeader as any;
+    const ModalCloseButtonComp = ModalCloseButton as any;
+    const ModalContentComp = ModalContent as any;
 
     React.useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             const key = e.key.toLowerCase();
-            if (key === "c" && !e.altKey) {
+            if (key === "c" && !e.ctrlKey && !e.metaKey && !e.altKey) {
                 copyWithToast(item.url, "Copied media link!");
             } else if (key === "d" && !e.ctrlKey && !e.metaKey && !e.altKey) {
                 downloadMedia(item.url, item.filename || "media");
@@ -192,12 +213,12 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
     }, [item]);
 
     return (
-        <ModalRoot {...modalProps} size={ModalSize.DYNAMIC} className="gm-modal-root">
-            <ModalHeader className="gm-modal-header">
+        <ModalRootComp {...modalProps} size={ModalSize.DYNAMIC} className="gm-modal-root">
+            <ModalHeaderComp className="gm-modal-header">
                 <div className="gm-modal-title" title={title}>{title}</div>
-                <ModalCloseButton onClick={modalProps.onClose} />
-            </ModalHeader>
-            <ModalContent className="gm-modal-content">
+                <ModalCloseButtonComp onClick={modalProps.onClose} />
+            </ModalHeaderComp>
+            <ModalContentComp className="gm-modal-content">
                 {item.type === "video" && src ? (
                     <video className="gm-modal-media" src={src} poster={isLikelyImageUrl(item.thumbnailUrl) ? item.thumbnailUrl : undefined} controls autoPlay playsInline />
                 ) : item.type === "audio" && src ? (
@@ -226,22 +247,27 @@ function MediaViewerModal({ item, modalProps }: { item: MediaItem; modalProps: a
                     <button className="gm-action-btn secondary" onClick={() => downloadMedia(item.url, item.filename || "media")}>Download</button>
                     <button className="gm-action-btn secondary" onClick={() => openExternal(item.url)}>Open Original</button>
                 </div>
-            </ModalContent>
-        </ModalRoot>
+            </ModalContentComp>
+        </ModalRootComp>
     );
 }
 
-function MediaCardImpl({ item, index = 0, onCloseGallery, onBeforeJump, closeOnJump = true, previewsPaused = false }: MediaCardProps) {
+function MediaCardImpl({ item, index = 0, onCloseGallery, onBeforeJump, closeOnJump = true, previewsPaused = false, cardSettings }: MediaCardProps) {
     const [mediaLoaded, setMediaLoaded] = useState<boolean>(false);
     const [hasError, setHasError] = useState<boolean>(false);
     const [copySuccess, setCopySuccess] = useState<boolean>(false);
     const [hovered, setHovered] = useState<boolean>(false);
+    const copyTimerRef = React.useRef<number | null>(null);
 
-    const { performanceProfile, previewBehavior, thumbnailQuality, respectSpoilers, blurNsfwChannels, cardChrome } =
-        settings.use([
-            "performanceProfile", "previewBehavior", "thumbnailQuality",
-            "respectSpoilers", "blurNsfwChannels", "cardChrome"
-        ]);
+    React.useEffect(() => () => {
+        if (copyTimerRef.current != null) {
+            window.clearTimeout(copyTimerRef.current);
+            copyTimerRef.current = null;
+        }
+    }, []);
+
+    const resolvedSettings = cardSettings ?? settings.store;
+    const { performanceProfile, previewBehavior, thumbnailQuality, respectSpoilers, blurNsfwChannels, cardChrome } = resolvedSettings;
 
     const profile = (performanceProfile || "balanced") as PerformanceProfile;
     const effectivePreview = resolvePreviewBehavior(profile, (previewBehavior || "auto") as PreviewBehavior);
@@ -368,7 +394,11 @@ function MediaCardImpl({ item, index = 0, onCloseGallery, onBeforeJump, closeOnJ
     const copyMediaLink = () => {
         copyWithToast(item.url, "Copied media link!");
         setCopySuccess(true);
-        setTimeout(() => setCopySuccess(false), 1500);
+        if (copyTimerRef.current != null) window.clearTimeout(copyTimerRef.current);
+        copyTimerRef.current = window.setTimeout(() => {
+            copyTimerRef.current = null;
+            setCopySuccess(false);
+        }, 1500);
     };
 
     const handleCardClick = () => {
@@ -411,8 +441,8 @@ function MediaCardImpl({ item, index = 0, onCloseGallery, onBeforeJump, closeOnJ
         e.preventDefault();
         e.stopPropagation();
 
-        const closeMenu = ContextMenuApi.closeContextMenu || ContextMenuApi.close;
-        const openMenu = ContextMenuApi.openContextMenu || ContextMenuApi.openContextMenuLazy || ContextMenuApi.open;
+        const closeMenu = ContextMenuApi.closeContextMenu || (ContextMenuApi as any).close;
+        const openMenu = ContextMenuApi.openContextMenu || ContextMenuApi.openContextMenuLazy || (ContextMenuApi as any).open;
 
         if (typeof openMenu === "function") {
             openMenu(e, () => (

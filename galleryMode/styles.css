@@ -500,6 +500,10 @@ body.gm-resizing-dock .gm-gallery-overlay-container {
     color-scheme: dark;
 }
 
+.gm-gallery-overlay-container.gm-theme-light .gm-date-input {
+    color-scheme: light;
+}
+
 .gm-close-btn {
     width: 36px;
     height: 36px;

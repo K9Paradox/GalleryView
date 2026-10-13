@@ -1,24 +1,19 @@
 import { ChannelStore, RestAPI } from "@webpack/common";
 import {
-    DiscordEmbed,
-    DiscordMessage,
     DiscordSearchResponse,
     MediaItem,
-    MediaType,
     RateLimitState,
     SearchParameters
 } from "../types";
+import {
+    DiscordSearchHasType,
+    ExtractedSearchResult,
+    resolveHasType,
+    transformSearchResponse
+} from "../utils/mediaExtractor";
 import { CacheService } from "./cacheService";
 
-type SearchResult = {
-    items: MediaItem[];
-    totalResults: number;
-    hasMore: boolean;
-    nextOffset: number;
-    /** Cursor for the embed stream that "all" blends in — tracked separately from nextOffset. */
-    nextEmbedOffset?: number;
-};
-type DiscordSearchHasType = "image" | "video" | "sound" | "file" | "embed";
+type SearchResult = ExtractedSearchResult;
 
 export class SearchService {
     private static requestQueue: Array<() => Promise<void>> = [];
@@ -118,7 +113,11 @@ export class SearchService {
         return collected;
     }
 
-    public static async listThreads(channelId: string, guildId?: string): Promise<any[]> {
+    public static async listThreads(
+        channelId: string,
+        guildId?: string | null,
+        channelType?: number
+    ): Promise<any[]> {
         if (!channelId) return [];
         const cached = this.threadListCache.get(channelId);
         if (cached && Date.now() - cached.timestamp <= this.THREAD_CACHE_TTL_MS) return cached.threads;
@@ -144,83 +143,95 @@ export class SearchService {
             }
         }
 
-        // 2. Forum/media channels: active and archived threads via search endpoint
-        let isForum = false;
-        try {
-            await this.enforceRequestSpacing();
-            const response: any = await RestAPI.get({
-                url: `/channels/${channelId}/threads/search`,
-                query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
-                oldFormErrors: true
-            });
-            const threads = (response?.body ?? response)?.threads;
-            if (Array.isArray(threads)) {
-                isForum = true;
-                absorb(threads);
-            }
-        } catch {
-            // Not a forum, or permission denied
-        }
+        // Resolve channel type so we don't fire /threads/search (which returns 400 Bad Request on
+        // standard text [0] and announcement [5] channels) unless the channel is actually a
+        // forum (15) or media (16) channel (or unknown because ChannelStore hasn't cached it).
+        const resolvedChannelType = channelType ?? ChannelStore?.getChannel(channelId)?.type;
+        const mayBeForumOrMedia = resolvedChannelType === 15
+            || resolvedChannelType === 16
+            || resolvedChannelType === undefined;
 
-        if (isForum) {
-            // Fetch archived forum posts as well
+        // 2. Forum/media channels: active and archived threads via search endpoint
+        let isForum = resolvedChannelType === 15 || resolvedChannelType === 16;
+        if (mayBeForumOrMedia) {
             try {
                 await this.enforceRequestSpacing();
-                const archivedResponse: any = await RestAPI.get({
+                const response: any = await RestAPI.get({
                     url: `/channels/${channelId}/threads/search`,
-                    query: { archived: true, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
+                    query: { archived: false, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
                     oldFormErrors: true
                 });
-                absorb((archivedResponse?.body ?? archivedResponse)?.threads);
+                const threads = (response?.body ?? response)?.threads;
+                if (Array.isArray(threads)) {
+                    isForum = true;
+                    absorb(threads);
+                }
             } catch {
-                // Ignore archived fetch error
+                // Not a forum, or permission denied
             }
-        }
 
-        // 3. Text/announcement channels: public archived threads
-        try {
-            await this.enforceRequestSpacing();
-            const response: any = await RestAPI.get({
-                url: `/channels/${channelId}/threads/archived/public`,
-                query: { limit: 100 },
-                oldFormErrors: true
-            });
-            const data = response?.body ?? response;
-            absorb(data?.threads);
-
-            // Fetch an additional page of archived threads if more exist
-            if (data?.has_more && Array.isArray(data?.threads) && data.threads.length > 0) {
-                const last = data.threads[data.threads.length - 1];
-                const before = last?.thread_metadata?.archive_timestamp || last?.id;
-                if (before) {
-                    try {
-                        await this.enforceRequestSpacing();
-                        const page2: any = await RestAPI.get({
-                            url: `/channels/${channelId}/threads/archived/public`,
-                            query: { limit: 100, before },
-                            oldFormErrors: true
-                        });
-                        absorb((page2?.body ?? page2)?.threads);
-                    } catch {
-                        // Ignore page 2 error
-                    }
+            if (isForum) {
+                // Fetch archived forum posts as well
+                try {
+                    await this.enforceRequestSpacing();
+                    const archivedResponse: any = await RestAPI.get({
+                        url: `/channels/${channelId}/threads/search`,
+                        query: { archived: true, sort_by: "last_message_time", sort_order: "desc", limit: 50 },
+                        oldFormErrors: true
+                    });
+                    absorb((archivedResponse?.body ?? archivedResponse)?.threads);
+                } catch {
+                    // Ignore archived fetch error
                 }
             }
-        } catch {
-            // Fine — fall back to other sources
         }
 
-        // 4. Private archived threads
-        try {
-            await this.enforceRequestSpacing();
-            const privateResponse: any = await RestAPI.get({
-                url: `/channels/${channelId}/threads/archived/private`,
-                query: { limit: 100 },
-                oldFormErrors: true
-            });
-            absorb((privateResponse?.body ?? privateResponse)?.threads);
-        } catch {
-            // Private threads may not be available or permitted
+        // 3. Text/announcement channels: public and private archived threads
+        if (!isForum) {
+            try {
+                await this.enforceRequestSpacing();
+                const response: any = await RestAPI.get({
+                    url: `/channels/${channelId}/threads/archived/public`,
+                    query: { limit: 100 },
+                    oldFormErrors: true
+                });
+                const data = response?.body ?? response;
+                absorb(data?.threads);
+
+                // Fetch an additional page of archived threads if more exist
+                if (data?.has_more && Array.isArray(data?.threads) && data.threads.length > 0) {
+                    const last = data.threads[data.threads.length - 1];
+                    const before = last?.thread_metadata?.archive_timestamp || last?.id;
+                    if (before) {
+                        try {
+                            await this.enforceRequestSpacing();
+                            const page2: any = await RestAPI.get({
+                                url: `/channels/${channelId}/threads/archived/public`,
+                                query: { limit: 100, before },
+                                oldFormErrors: true
+                            });
+                            absorb((page2?.body ?? page2)?.threads);
+                        } catch {
+                            // Ignore page 2 error
+                        }
+                    }
+                }
+            } catch {
+                // Fine — fall back to other sources
+            }
+
+            // 4. Private archived threads
+            try {
+                await this.enforceRequestSpacing();
+                const privateResponse: any = await RestAPI.get({
+                    url: `/channels/${channelId}/threads/archived/private`,
+                    query: { limit: 100 },
+                    oldFormErrors: true
+                });
+                absorb((privateResponse?.body ?? privateResponse)?.threads);
+            } catch {
+                // Private threads may not be available or permitted
+            }
         }
 
         // 5. Check in-memory channels from ChannelStore
@@ -307,7 +318,7 @@ export class SearchService {
                 items: cached.items,
                 totalResults: cached.totalResults,
                 hasMore: cached.hasMore,
-                nextOffset: cached.nextOffset ?? ((params.offset || 0) + cached.items.length),
+                nextOffset: cached.nextOffset ?? ((params.offset || 0) + (params.limit || 25)),
                 nextEmbedOffset: cached.nextEmbedOffset
             };
         }
@@ -371,55 +382,86 @@ export class SearchService {
         // fetch the same broad streams as ALL (attachments + embeds) and narrow the results
         // client-side via matchesRequestedType. Request cost is identical to ALL.
         const isMultiSelect = (params.filterTypes?.length ?? 0) > 1;
-        const isAll = isMultiSelect || (params.filterType ?? "all") === "all";
+        const needsEmbedPass = isMultiSelect || (params.filterType ?? "all") === "all";
 
-        // "All" should feel like a real gallery, not just attachments. Discord search only accepts
-        // one has: type per request, so we run two streams (attachments + embeds) and blend them.
-        //
-        // Each stream keeps its OWN cursor. Previously both used params.offset, so as soon as one
-        // stream ran out the other kept re-requesting an already-consumed page — burning a request
-        // per "Load More" that could never return anything new. embedOffset < 0 marks the embed
-        // stream as exhausted, which skips the second HTTP request entirely from then on.
-        const embedOffset = params.embedOffset ?? params.offset ?? 0;
-        const embedExhausted = isAll && embedOffset < 0;
+        if (!needsEmbedPass) {
+            return this.executeSingleSearchRequest(params, resolveHasType(params.filterType));
+        }
 
+        // Dual-stream mode ("all" or multi-select): run two independent streams (attachments + embeds)
+        // and blend them. Each stream tracks its own cursor (`offset` for `has:file`, `embedOffset`
+        // for `has:embed`), and `< 0` marks that stream as exhausted so we never re-fetch an already
+        // consumed page when one stream runs out before the other.
+        const fileOffset = params.offset ?? 0;
+        const embedOffset = params.embedOffset ?? (params.offset ?? 0);
         const attachmentTarget = this.searchTargetKey(params);
-        const skipEmbedStream = embedExhausted || this.emptyStreams.has(`${attachmentTarget}|embed`);
 
-        const primary = await this.executeSingleSearchRequest(
-            params,
-            isMultiSelect ? "file" : this.resolveHasType(params.filterType)
-        );
+        const skipFileStream = fileOffset < 0 || this.emptyStreams.has(`${attachmentTarget}|file`);
+        const skipEmbedStream = embedOffset < 0 || this.emptyStreams.has(`${attachmentTarget}|embed`);
 
-        if (isAll && !skipEmbedStream) {
+        let primary: SearchResult = {
+            items: [],
+            totalResults: 0,
+            hasMore: false,
+            nextOffset: -1
+        };
+
+        if (!skipFileStream) {
+            primary = await this.executeSingleSearchRequest(
+                { ...params, offset: fileOffset },
+                "file"
+            );
+            if (fileOffset === 0 && primary.totalResults === 0) {
+                this.emptyStreams.add(`${attachmentTarget}|file`);
+            }
+        }
+
+        let embeds: SearchResult = {
+            items: [],
+            totalResults: 0,
+            hasMore: false,
+            nextOffset: -1
+        };
+
+        if (!skipEmbedStream) {
             try {
-                await this.enforceRequestSpacing();
-                const embeds = await this.executeSingleSearchRequest(
+                if (!skipFileStream) {
+                    await this.enforceRequestSpacing();
+                }
+                embeds = await this.executeSingleSearchRequest(
                     // Keep filterTypes so the embed page is narrowed client-side the same way.
                     { ...params, filterType: isMultiSelect ? params.filterType : "all", offset: embedOffset },
                     "embed"
                 );
-                const items = CacheService.deduplicateItems(primary.items, embeds.items);
-
-                // Remember channel/guild+filter combinations that have zero embed results at all,
-                // so subsequent pages in this session don't pay for a guaranteed-empty request.
                 if (embedOffset === 0 && embeds.totalResults === 0) {
                     this.emptyStreams.add(`${attachmentTarget}|embed`);
                 }
-
-                return {
-                    items,
-                    totalResults: Math.max(primary.totalResults, embeds.totalResults, items.length),
-                    hasMore: primary.hasMore || embeds.hasMore,
-                    nextOffset: primary.nextOffset,
-                    nextEmbedOffset: embeds.hasMore ? embeds.nextOffset : -1
-                };
             } catch (err) {
                 console.warn("[GalleryMode] Failed to include embed results in all-media query; continuing with attachments only.", err);
             }
         }
 
-        return isAll ? { ...primary, nextEmbedOffset: skipEmbedStream ? -1 : primary.nextEmbedOffset } : primary;
+        const merged = CacheService.deduplicateItems(primary.items, embeds.items);
+        if (primary.items.length > 0 && embeds.items.length > 0) {
+            merged.sort((a, b) => {
+                const timeA = new Date(a.timestamp).getTime() || 0;
+                const timeB = new Date(b.timestamp).getTime() || 0;
+                return params.sortOrder === "asc" ? timeA - timeB : timeB - timeA;
+            });
+        }
+
+        const nextFileOffset = !skipFileStream && primary.hasMore ? primary.nextOffset : -1;
+        const nextEmbedOffset = !skipEmbedStream && embeds.hasMore ? embeds.nextOffset : -1;
+        const hasMore = nextFileOffset >= 0 || nextEmbedOffset >= 0;
+        const totalResults = Math.max(primary.totalResults + embeds.totalResults, merged.length);
+
+        return {
+            items: merged,
+            totalResults,
+            hasMore,
+            nextOffset: nextFileOffset,
+            nextEmbedOffset
+        };
     }
 
     /** Identity of the thing being searched, ignoring pagination — used for negative caching. */
@@ -454,11 +496,19 @@ export class SearchService {
                 chunks.push(params.channelIds.slice(i, i + this.MAX_CHANNELS_PER_QUERY));
             }
 
-            const results = await Promise.all(
-                chunks.map(chunk => this.executeDirectSearchRequest({ ...params, channelIds: chunk }, hasType))
-            );
+            // Space chunk requests sequentially so a large channel selection does not burst
+            // simultaneous search calls and trip Discord's rate limiter.
+            const results: SearchResult[] = [];
+            for (let i = 0; i < chunks.length; i++) {
+                if (i > 0) await this.enforceRequestSpacing();
+                const chunkResult = await this.executeDirectSearchRequest(
+                    { ...params, channelIds: chunks[i] },
+                    hasType
+                );
+                results.push(chunkResult);
+            }
 
-            // Merge items and deduplicate
+            // Merge items and deduplicate across all chunks in this offset window
             const seen = new Set<string>();
             const mergedItems: MediaItem[] = [];
             let totalResults = 0;
@@ -480,15 +530,17 @@ export class SearchService {
                 return params.sortOrder === "asc" ? timeA - timeB : timeB - timeA;
             });
 
-            const limit = params.limit || 25;
-            const items = mergedItems.slice(0, limit);
-            const hasMore = mergedItems.length > limit || results.some(r => r.hasMore);
+            // Keep all merged items from this offset window rather than slicing to `limit` and
+            // permanently discarding items from the other chunks, and advance `nextOffset` by
+            // the per-chunk message page step (`limit`).
+            const step = params.limit || 25;
+            const hasMore = results.some(r => r.hasMore);
 
             return {
-                items,
+                items: mergedItems,
                 totalResults,
                 hasMore,
-                nextOffset: (params.offset || 0) + items.length
+                nextOffset: (params.offset || 0) + step
             };
         }
 
@@ -503,7 +555,7 @@ export class SearchService {
         const queryParams: Record<string, any> = {
             include_nsfw: params.nsfw ?? true,
             context_size: 0,
-            offset: params.offset || 0,
+            offset: Math.max(0, params.offset || 0),
             has: hasType
         };
 
@@ -548,7 +600,7 @@ export class SearchService {
         }
 
         const responseData = await this.requestDiscordSearch(endpoint, queryParams);
-        return this.transformSearchResponse(responseData, params);
+        return transformSearchResponse(responseData, params);
     }
 
     private static async requestDiscordSearch(
@@ -628,226 +680,6 @@ export class SearchService {
         }
     }
 
-    private static transformSearchResponse(response: DiscordSearchResponse, params: SearchParameters): SearchResult {
-        const extractedItems: MediaItem[] = [];
-
-        if (!response || !Array.isArray(response.messages)) {
-            return { items: [], totalResults: 0, hasMore: false, nextOffset: params.offset || 0 };
-        }
-
-        const hitGroups = response.messages;
-        const messages = hitGroups.flat().filter(Boolean) as DiscordMessage[];
-        const seenMessageIds = new Set<string>();
-
-        for (const msg of messages) {
-            if (!msg?.id || seenMessageIds.has(msg.id)) continue;
-
-            // Bot/webhook exclusion. Discord search has no author-type filter, but every
-            // payload carries author.bot (and webhook messages carry webhook_id), so the
-            // client-side filter is exact. Filtered messages still count towards
-            // total_results/offset advancement — pagination is unaffected, and the gallery's
-            // barren-page walker already handles pages that yield no renderable cards.
-            if (params.excludeBots && (msg.author?.bot || msg.webhook_id)) continue;
-
-            seenMessageIds.add(msg.id);
-
-            // Age-restricted source channel — used to optionally blur previews.
-            let isNsfwChannel = false;
-            try {
-                isNsfwChannel = !!ChannelStore?.getChannel(msg.channel_id)?.nsfw;
-            } catch {
-                // Channel not cached; treat as safe rather than blurring everything.
-            }
-
-            if (params.channelId && (!params.channelIds || params.channelIds.length === 0) && msg.channel_id !== params.channelId) {
-                continue;
-            }
-
-            if (msg.attachments?.length) {
-                for (const att of msg.attachments) {
-                    const detectedType = this.categorizeAttachment(att.filename, att.content_type);
-                    if (!this.matchesRequestedType(detectedType, params)) continue;
-
-                    const ext = att.filename.includes(".") ? att.filename.split(".").pop()?.toUpperCase() : "FILE";
-                    // Discord flags spoilered attachments with a SPOILER_ filename prefix, and
-                    // newer payloads additionally set bit 1<<3 on attachment.flags.
-                    const isSpoiler = att.filename.startsWith("SPOILER_") || !!((att.flags ?? 0) & 8);
-
-                    extractedItems.push({
-                        id: `att_${att.id}`,
-                        messageId: msg.id,
-                        channelId: msg.channel_id,
-                        guildId: msg.guild_id || params.guildId,
-                        url: att.url,
-                        proxyUrl: att.proxy_url || att.url,
-                        thumbnailUrl: detectedType === "image" || detectedType === "gif" ? (att.proxy_url || att.url) : undefined,
-                        filename: att.filename,
-                        type: detectedType,
-                        fileExtension: ext,
-                        fileSize: att.size,
-                        width: att.width,
-                        height: att.height,
-                        timestamp: msg.timestamp,
-                        content: msg.content,
-                        isSpoiler,
-                        isNsfwChannel,
-                        author: this.transformAuthor(msg)
-                    });
-                }
-            }
-
-            if (msg.embeds?.length) {
-                for (let index = 0; index < msg.embeds.length; index++) {
-                    const embed = msg.embeds[index];
-                    const detectedType = this.categorizeEmbed(embed);
-                    if (!detectedType || !this.matchesRequestedType(detectedType, params)) continue;
-
-                    const rawMediaUrl = embed.image?.url || embed.video?.url || embed.thumbnail?.url || embed.url;
-                    if (!rawMediaUrl) continue;
-                    const mediaUrl = this.normaliseExternalMediaUrl(rawMediaUrl);
-
-                    const safeProxyUrl = this.safePreviewUrl(embed.image?.proxy_url || embed.video?.proxy_url || embed.thumbnail?.proxy_url);
-                    const safeThumbnailUrl = this.safePreviewUrl(embed.thumbnail?.proxy_url || embed.image?.proxy_url);
-
-                    extractedItems.push({
-                        id: `emb_${msg.id}_${index}_${this.stableHash(mediaUrl)}`,
-                        messageId: msg.id,
-                        channelId: msg.channel_id,
-                        guildId: msg.guild_id || params.guildId,
-                        url: mediaUrl,
-                        proxyUrl: safeProxyUrl,
-                        thumbnailUrl: safeThumbnailUrl,
-                        filename: embed.title || embed.provider?.name || "Embedded Media",
-                        type: detectedType,
-                        width: embed.image?.width || embed.video?.width || embed.thumbnail?.width,
-                        height: embed.image?.height || embed.video?.height || embed.thumbnail?.height,
-                        timestamp: msg.timestamp,
-                        content: msg.content,
-                        embedTitle: embed.title,
-                        embedDescription: embed.description,
-                        embedSiteName: embed.provider?.name,
-                        embedColor: embed.color,
-                        // A link wrapped in || || spoils the embed it generates.
-                        isSpoiler: /\|\|.*?\|\|/s.test(msg.content || ""),
-                        isNsfwChannel,
-                        author: this.transformAuthor(msg)
-                    });
-                }
-            }
-        }
-
-        const totalResults = response.total_results ?? extractedItems.length;
-        const currentOffset = params.offset || 0;
-        // Each group in response.messages is one matched message ("hit") plus its surrounding
-        // context messages. The number of groups is therefore the number of results consumed on
-        // this page, which is what Discord's `offset` pagination advances by.
-        const returnedHits = hitGroups.length || messages.length;
-        const nextOffset = currentOffset + returnedHits;
-        const hasMore = returnedHits > 0 && nextOffset < totalResults;
-
-        return {
-            items: CacheService.deduplicateItems([], extractedItems),
-            totalResults,
-            hasMore,
-            nextOffset
-        };
-    }
-
-    private static transformAuthor(msg: DiscordMessage) {
-        return {
-            id: msg.author?.id || "0",
-            username: msg.author?.username || "Unknown",
-            globalName: msg.author?.global_name || msg.author?.username || "Unknown",
-            avatar: msg.author?.avatar,
-            avatarDecoration: msg.author?.avatar_decoration,
-            bot: msg.author?.bot
-        };
-    }
-
-    private static matchesRequestedType(type: MediaType, params: SearchParameters): boolean {
-        const selected = params.filterTypes?.length ? params.filterTypes : [params.filterType || "all"];
-        return selected.some(filter => {
-            if (filter === "all") return true;
-            // "image" covers static images and GIFs, matching the IMAGE tab's label.
-            if (filter === "image") return type === "image" || type === "gif";
-            if (filter === "file") return type === "file";
-            return type === filter;
-        });
-    }
-
-    private static resolveHasType(filterType: SearchParameters["filterType"]): DiscordSearchHasType {
-        switch (filterType) {
-            case "image":
-                return "image";
-            case "video":
-                return "video";
-            case "audio":
-                return "sound";
-            case "embed":
-                return "embed";
-            case "file":
-            case "all":
-            default:
-                return "file";
-        }
-    }
-
-    private static categorizeAttachment(filename: string, contentType?: string): MediaType {
-        const lowerName = filename.toLowerCase();
-        const lowerType = (contentType || "").toLowerCase();
-
-        if (lowerType.includes("gif") || /\.gif$/i.test(lowerName)) return "gif";
-        if (lowerType.startsWith("image/") || /\.(png|jpe?g|webp|svg|bmp|tiff?|avif)$/i.test(lowerName)) return "image";
-        if (lowerType.startsWith("video/") || /\.(mp4|webm|mov|m4v|mkv|avi|flv)$/i.test(lowerName)) return "video";
-        if (lowerType.startsWith("audio/") || /\.(mp3|ogg|oga|wav|flac|m4a|aac|opus)$/i.test(lowerName)) return "audio";
-
-        return "file";
-    }
-
-    private static categorizeEmbed(embed: DiscordEmbed): MediaType | null {
-        const imageUrl = embed.image?.url || embed.thumbnail?.url || embed.url || "";
-        if (embed.type === "gifv" || /\.(gif|gifv)(\?|$)/i.test(imageUrl)) return "gif";
-        if (embed.video || embed.type === "video") return "video";
-        if (embed.image || embed.type === "image") return "image";
-        if (embed.thumbnail || embed.url || embed.type === "link" || embed.type === "article" || embed.provider) return "embed";
-
-        return null;
-    }
-
-    private static safePreviewUrl(url?: string): string | undefined {
-        if (!url || !this.isDiscordMediaUrl(url)) return undefined;
-        return url;
-    }
-
-    private static normaliseExternalMediaUrl(url: string): string {
-        try {
-            const parsed = new URL(url);
-            // Old Twitter/X embeds often store image variants as /media/id.jpg:large,
-            // which now returns 404. Convert it to the modern variant query format.
-            if (parsed.hostname === "pbs.twimg.com") {
-                const match = parsed.pathname.match(/^(\/media\/[^.]+)\.(jpg|jpeg|png|webp):(small|medium|large|orig)$/i);
-                if (match) {
-                    parsed.pathname = match[1];
-                    parsed.search = `?format=${match[2].toLowerCase()}&name=${match[3].toLowerCase()}`;
-                    return parsed.toString();
-                }
-            }
-        } catch {
-            // Keep the original if URL parsing fails.
-        }
-
-        return url;
-    }
-
-    private static isDiscordMediaUrl(url: string): boolean {
-        try {
-            const host = new URL(url).hostname.toLowerCase();
-            return host === "cdn.discordapp.com" || host === "media.discordapp.net" || host.endsWith(".discordapp.net");
-        } catch {
-            return false;
-        }
-    }
-
     private static async enforceRequestSpacing(): Promise<void> {
         const timeSinceLast = Date.now() - this.lastRequestTimestamp;
         if (timeSinceLast < this.requestIntervalMs) {
@@ -896,13 +728,5 @@ export class SearchService {
 
     private static sleep(ms: number): Promise<void> {
         return new Promise(resolve => setTimeout(resolve, Math.max(0, ms)));
-    }
-
-    private static stableHash(value: string): string {
-        let hash = 0;
-        for (let i = 0; i < value.length; i++) {
-            hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
-        }
-        return Math.abs(hash).toString(36);
     }
 }

@@ -19,10 +19,12 @@ import { useThemeTone } from "../useThemeTone";
 import { CacheService, GallerySessionState } from "../services/cacheService";
 import { SearchService } from "../services/searchService";
 import { GallerySortOrder, MediaItem, RateLimitState, SearchParameters } from "../types";
-import { MediaCard } from "./MediaCard";
+import { MediaCard, MediaCardSettings } from "./MediaCard";
 import { MasonryGrid } from "./MasonryGrid";
 import { SkeletonGrid, SkeletonCard } from "./SkeletonCard";
 import { DENSITY_RECTS, ICON_PATHS } from "./iconData";
+import { useDockMode } from "./hooks/useDockMode";
+import { useSegmentedControl } from "./hooks/useSegmentedIndicator";
 
 interface GalleryViewProps {
     onClose?: () => void;
@@ -116,61 +118,6 @@ const PAGE_SIZE = 25;
 // clicks bypass this.
 const AUTO_LOAD_COOLDOWN_MS = 700;
 
-const DOCK_STORAGE_KEY = "GalleryMode:dockWidth";
-const DOCK_DEFAULT_WIDTH = 520;
-const DOCK_MIN_WIDTH = 320;
-const DOCK_MAX_WIDTH = 760;
-const DOCK_MIN_CHAT_WIDTH = 360;
-const DOCK_RESERVE_GAP = 96;
-
-function clampDockWidth(width: number): number {
-    let max = DOCK_MAX_WIDTH;
-    try {
-        max = Math.min(DOCK_MAX_WIDTH, Math.max(DOCK_MIN_WIDTH, window.innerWidth - DOCK_MIN_CHAT_WIDTH - DOCK_RESERVE_GAP));
-    } catch {
-        // Module evaluated outside a browser-like context; keep the static max.
-    }
-    return Math.round(Math.min(Math.max(width, DOCK_MIN_WIDTH), max));
-}
-
-function readSavedDockWidth(): number {
-    try {
-        const saved = Number(localStorage.getItem(DOCK_STORAGE_KEY));
-        if (Number.isFinite(saved) && saved > 0) return clampDockWidth(saved);
-    } catch {
-        // Non-fatal; the default dock width is fine.
-    }
-    return clampDockWidth(DOCK_DEFAULT_WIDTH);
-}
-
-function saveDockWidth(width: number) {
-    try {
-        localStorage.setItem(DOCK_STORAGE_KEY, String(clampDockWidth(width)));
-    } catch {
-        // Non-fatal; the drag still works for this session.
-    }
-}
-
-function findDockReservationTarget(): HTMLElement | null {
-    const appMount = document.getElementById("app-mount");
-    if (!appMount) return null;
-
-    const candidates = Array.from(appMount.querySelectorAll<HTMLElement>('[class*="chat_"]'))
-        .filter(element => {
-            if (element.closest(".gm-gallery-overlay-container")) return false;
-            const rect = element.getBoundingClientRect();
-            // Prefer the main chat container, not a tiny nested bit of chat chrome.
-            return rect.width >= 420 && rect.height >= 360;
-        })
-        .sort((a, b) => {
-            const ar = a.getBoundingClientRect();
-            const br = b.getBoundingClientRect();
-            return (br.width * br.height) - (ar.width * ar.height);
-        });
-
-    return candidates[0] || null;
-}
-
 /**
  * Opt-in tracing for session restore / refetch decisions. Enable from the console with:
  *   localStorage.gmDebug = "1"
@@ -257,79 +204,6 @@ function getThreadActivityTimestamp(thread: any): number {
         }
     }
     return 0;
-}
-
-function useSegmentedControl(
-    containerRef: React.RefObject<HTMLDivElement | null>,
-    activeKey: any,
-    isMultiSelect = false
-): React.RefObject<HTMLDivElement | null> {
-    const indicatorRef = useRef<HTMLDivElement>(null);
-    const isInitialRef = useRef(true);
-
-    // Instant pointer-down tracking: moves indicator with zero ms latency before heavy React re-renders
-    React.useEffect(() => {
-        const container = containerRef.current;
-        const indicator = indicatorRef.current;
-        if (!container || !indicator) return;
-
-        const onPointerDown = (e: PointerEvent) => {
-            const btn = (e.target as HTMLElement)?.closest<HTMLElement>(".gm-scope-btn, .gm-tab-btn");
-            if (btn && container.contains(btn) && !isMultiSelect) {
-                const left = btn.offsetLeft;
-                const width = btn.offsetWidth;
-                indicator.style.transform = `translate3d(${left}px, 0, 0)`;
-                indicator.style.width = `${width}px`;
-                indicator.style.opacity = "1";
-            }
-        };
-
-        container.addEventListener("pointerdown", onPointerDown, { passive: true });
-        return () => {
-            container.removeEventListener("pointerdown", onPointerDown);
-        };
-    }, [isMultiSelect, containerRef]);
-
-    React.useLayoutEffect(() => {
-        const container = containerRef.current;
-        const indicator = indicatorRef.current;
-        if (!container || !indicator) return;
-
-        if (isMultiSelect) {
-            indicator.style.opacity = "0";
-            return;
-        }
-
-        const update = (animate = true) => {
-            const activeEl = container.querySelector<HTMLElement>(".active");
-            if (activeEl) {
-                const left = activeEl.offsetLeft;
-                const width = activeEl.offsetWidth;
-                if (!animate || isInitialRef.current) {
-                    indicator.style.transition = "none";
-                    indicator.style.transform = `translate3d(${left}px, 0, 0)`;
-                    indicator.style.width = `${width}px`;
-                    indicator.style.opacity = "1";
-                    void indicator.offsetHeight;
-                    indicator.style.transition = "";
-                    isInitialRef.current = false;
-                } else {
-                    indicator.style.transform = `translate3d(${left}px, 0, 0)`;
-                    indicator.style.width = `${width}px`;
-                    indicator.style.opacity = "1";
-                }
-            } else {
-                indicator.style.opacity = "0";
-            }
-        };
-
-        update(true);
-        const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => update(false)) : null;
-        if (ro) ro.observe(container);
-        return () => { ro?.disconnect(); };
-    }, [activeKey, isMultiSelect, containerRef]);
-
-    return indicatorRef;
 }
 
 // Discord calls the collapsible groups in a server's channel list "categories" (channel
@@ -426,6 +300,7 @@ function createDefaultSessionState(initialQuery: string, defaults: SessionDefaul
     return {
         mediaItems: [],
         offset: 0,
+        embedOffset: 0,
         totalResults: 0,
         hasMore: true,
         scrollTop: 0,
@@ -461,6 +336,7 @@ function mergeSessionState(
         ...fallback,
         ...session,
         mediaItems: session.mediaItems || [],
+        embedOffset: session.embedOffset ?? 0,
         beforeDate: session.beforeDate || "",
         afterDate: session.afterDate || "",
         sortOrder: session.sortOrder || defaults.sortOrder || "desc",
@@ -472,11 +348,22 @@ function mergeSessionState(
 export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery = "" }) => {
     const {
         cardChrome, defaultCardSize, defaultFilterType, defaultScope, defaultSortOrder,
-        layout, nsfw, performanceProfile, rememberSessions, viewMode, hideBotPosts
+        layout, nsfw, performanceProfile, rememberSessions, viewMode, hideBotPosts,
+        previewBehavior, thumbnailQuality, respectSpoilers, blurNsfwChannels
     } = settings.use([
         "cardChrome", "defaultCardSize", "defaultFilterType", "defaultScope", "defaultSortOrder",
-        "layout", "nsfw", "performanceProfile", "rememberSessions", "viewMode", "hideBotPosts"
+        "layout", "nsfw", "performanceProfile", "rememberSessions", "viewMode", "hideBotPosts",
+        "previewBehavior", "thumbnailQuality", "respectSpoilers", "blurNsfwChannels"
     ]);
+
+    const cardSettings = React.useMemo<MediaCardSettings>(() => ({
+        performanceProfile,
+        previewBehavior,
+        thumbnailQuality,
+        respectSpoilers,
+        blurNsfwChannels,
+        cardChrome
+    }), [performanceProfile, previewBehavior, thumbnailQuality, respectSpoilers, blurNsfwChannels, cardChrome]);
 
     /**
      * Experience presets are intentionally higher-level than the old pile of independent toggles.
@@ -602,7 +489,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const [authorMenuDismissed, setAuthorMenuDismissed] = useState<boolean>(false);
     const [rateLimitState, setRateLimitState] = useState<RateLimitState>(() => SearchService.getRateLimitState());
     const [isScrolling, setIsScrolling] = useState<boolean>(false);
-    const [dockWidth, setDockWidth] = useState<number>(() => readSavedDockWidth());
+    const { dockWidth, startDockResize } = useDockMode(effectiveViewMode, isDocked, liveSessionKey);
 
     const selectedCardWidth = parseInt(cardMinWidth, 10) || parseInt(defaultCardSize || "240", 10) || 240;
     const dockContentWidth = Math.max(240, dockWidth - 32);
@@ -639,7 +526,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     const authorInputRef = useRef<HTMLDivElement>(null);
     const scrollingTimerRef = useRef<number | null>(null);
     const scrollPersistTimerRef = useRef<number | null>(null);
-    const dockReservationRef = useRef<HTMLElement | null>(null);
     const latestRequestRef = useRef<number>(0);
     const fetchingRef = useRef<boolean>(false);
     const lastAutoLoadRef = useRef<number>(0);
@@ -652,7 +538,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
     // Lets the deferred timer call the newest closure rather than a stale captured one.
     const loadNextPageRef = useRef<(source?: "auto" | "manual") => void>(() => { });
     // Cursor for the embed stream blended into the "all" filter. -1 means "exhausted, stop asking".
-    const embedOffsetRef = useRef<number>(0);
+    const embedOffsetRef = useRef<number>(initialSession.embedOffset ?? 0);
     const mediaItemsRef = useRef<MediaItem[]>(mediaItems);
     const lastSessionKeyRef = useRef<string>(sessionKey);
     // Set by handleBeforeJump so the navigation it causes doesn't release the pin.
@@ -763,12 +649,12 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         }
 
         let cancelled = false;
-        void SearchService.listThreads(threadHostId, guildId)
+        void SearchService.listThreads(threadHostId, guildId, threadHostChannel?.type)
             .then(threads => { if (!cancelled) setFetchedThreads(threads); })
             .catch(() => { if (!cancelled) setFetchedThreads([]); });
 
         return () => { cancelled = true; };
-    }, [threadHostId, guildId]);
+    }, [threadHostId, guildId, threadHostChannel?.type]);
 
     // Threads across the whole guild, keyed by the channel that owns them. GuildChannelStore
     // has no thread bucket, so without this the server-wide picker silently omits every thread.
@@ -1059,11 +945,11 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             };
 
             if (guildId && GuildMemberStore) {
-                const rawMembers = GuildMemberStore.getMembers(guildId);
+                const rawMembers: any = GuildMemberStore.getMembers(guildId);
                 if (rawMembers) {
                     if (Array.isArray(rawMembers)) {
                         for (let i = 0; i < rawMembers.length; i++) {
-                            const member = rawMembers[i];
+                            const member: any = rawMembers[i];
                             const uid = member?.userId || member?.user_id || member?.id;
                             if (!uid) continue;
                             const user = UserStore.getUser(uid);
@@ -1075,7 +961,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                     } else {
                         for (const key in rawMembers) {
                             if (!Object.prototype.hasOwnProperty.call(rawMembers, key)) continue;
-                            const member = (rawMembers as any)[key];
+                            const member: any = rawMembers[key];
                             const uid = member?.userId || member?.user_id || member?.id || key;
                             if (!uid) continue;
                             const user = UserStore.getUser(uid);
@@ -1137,6 +1023,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
         CacheService.saveSession(targetSessionKey, {
             mediaItems: snapshot.mediaItems,
             offset: snapshot.offset,
+            embedOffset: embedOffsetRef.current,
             totalResults: snapshot.totalResults,
             hasMore: snapshot.hasMore,
             scrollTop,
@@ -1192,9 +1079,15 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
 
         latestRequestRef.current++;
         fetchingRef.current = false;
+        embedOffsetRef.current = next.embedOffset ?? 0;
+        barrenPagesRef.current = 0;
         mediaItemsRef.current = next.mediaItems;
         pendingRestoreScrollRef.current = next.mediaItems.length > 0 ? next.scrollTop || 0 : null;
+        lastScrollTopRef.current = next.scrollTop || 0;
         skipAutoFetchRef.current = next.mediaItems.length > 0;
+        if (next.mediaItems.length === 0) {
+            scrollContainerRef.current?.scrollTo({ top: 0 });
+        }
 
         setMediaItems(next.mediaItems);
         setLoading(next.mediaItems.length === 0);
@@ -1236,10 +1129,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             if (activeChannelId || activeGuildId) return { activeChannelId, activeGuildId };
         }
 
-        const activeChannelId = SelectedChannelStore?.getChannelId();
+        const activeChannelId = SelectedChannelStore?.getChannelId() || undefined;
         const activeChannel = activeChannelId ? ChannelStore?.getChannel(activeChannelId) : null;
         // Same DM-safe guard as above: only fall back to SelectedGuildStore when no channel is active.
-        const activeGuildId = activeChannel?.guild_id || (activeChannel ? undefined : SelectedGuildStore?.getGuildId());
+        const activeGuildId = (activeChannel?.guild_id || (activeChannel ? undefined : SelectedGuildStore?.getGuildId())) || undefined;
         if (!activeChannelId && !activeGuildId) return null;
         return { activeChannelId, activeGuildId };
     };
@@ -1353,6 +1246,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             // Discord search returns "hit groups" per page, so the correct next offset is the
             // number of results actually returned, not a fixed PAGE_SIZE step. This prevents
             // skipped media when a page returns fewer results than PAGE_SIZE.
+            const prevEmbedOffset = embedOffsetRef.current;
             const nextOffset = res.nextOffset ?? (fetchOffset + PAGE_SIZE);
             if (res.nextEmbedOffset !== undefined) embedOffsetRef.current = res.nextEmbedOffset;
 
@@ -1375,7 +1269,10 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             // button that appears to do nothing. Keep walking the result set automatically
             // until we surface at least one card (or run out), bounded so a huge barren range
             // can't spin forever.
-            if (gained === 0 && res.hasMore && nextOffset > fetchOffset) {
+            const streamAdvanced = (nextOffset > fetchOffset && fetchOffset >= 0) ||
+                (res.nextEmbedOffset !== undefined && res.nextEmbedOffset > prevEmbedOffset && prevEmbedOffset >= 0);
+
+            if (gained === 0 && res.hasMore && streamAdvanced) {
                 if (barrenPagesRef.current < MAX_BARREN_PAGES) {
                     barrenPagesRef.current++;
                     fetchingRef.current = false;
@@ -1393,6 +1290,7 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             CacheService.saveSession(sessionKey, {
                 mediaItems: updatedItems,
                 offset: nextOffset,
+                embedOffset: embedOffsetRef.current,
                 totalResults: res.totalResults,
                 hasMore: res.hasMore,
                 scrollTop: isReset ? 0 : lastScrollTopRef.current,
@@ -1522,101 +1420,6 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
             scrollPersistTimerRef.current = null;
         }
     }, []);
-
-    useEffect(() => {
-        const handleResize = () => setDockWidth(width => clampDockWidth(width));
-        window.addEventListener("resize", handleResize);
-        return () => window.removeEventListener("resize", handleResize);
-    }, []);
-
-    useEffect(() => {
-        if (!isDocked) return;
-
-        const root = document.documentElement;
-        const side = effectiveViewMode === "dockRight" ? "right" : "left";
-        let frame = 0;
-        let settleTimer = 0;
-
-        const clearReservation = () => {
-            dockReservationRef.current?.classList.remove("gm-discord-reserved-for-gallery");
-            dockReservationRef.current = null;
-        };
-
-        const syncDockReservation = () => {
-            clearReservation();
-
-            // Measure the chat before adding the margin reservation. For left dock this is what
-            // lets the panel sit between Discord's sidebars and chat instead of covering server /
-            // channel navigation.
-            const target = findDockReservationTarget();
-            if (target) {
-                const rect = target.getBoundingClientRect();
-                if (side === "left") {
-                    root.style.setProperty("--gm-dock-left-x", `${Math.max(8, Math.round(rect.left))}px`);
-                } else {
-                    root.style.removeProperty("--gm-dock-left-x");
-                }
-                target.classList.add("gm-discord-reserved-for-gallery");
-                dockReservationRef.current = target;
-            } else {
-                root.style.removeProperty("--gm-dock-left-x");
-            }
-        };
-
-        root.classList.add("gm-dock-active", `gm-dock-active-${side}`);
-        syncDockReservation();
-        // Discord often finishes moving channel/member columns one frame after route changes.
-        // A second pass avoids the "dock is wrong until reopen" glitch without polling forever.
-        frame = requestAnimationFrame(syncDockReservation);
-        settleTimer = window.setTimeout(syncDockReservation, 250);
-        window.addEventListener("resize", syncDockReservation);
-
-        return () => {
-            if (frame) cancelAnimationFrame(frame);
-            if (settleTimer) clearTimeout(settleTimer);
-            window.removeEventListener("resize", syncDockReservation);
-            root.classList.remove("gm-dock-active", "gm-dock-active-left", "gm-dock-active-right");
-            root.style.removeProperty("--gm-active-dock-width");
-            root.style.removeProperty("--gm-dock-left-x");
-            clearReservation();
-        };
-    }, [effectiveViewMode, isDocked, liveSessionKey]);
-
-    useEffect(() => {
-        if (!isDocked) return;
-        document.documentElement.style.setProperty("--gm-active-dock-width", `${dockWidth}px`);
-    }, [dockWidth, isDocked]);
-
-    const startDockResize = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!isDocked) return;
-        e.preventDefault();
-        e.stopPropagation();
-
-        const startX = e.clientX;
-        const startWidth = dockWidth;
-        const direction = effectiveViewMode;
-        let latestWidth = startWidth;
-
-        document.body.classList.add("gm-resizing-dock");
-
-        const handleMove = (event: MouseEvent) => {
-            const delta = direction === "dockRight"
-                ? startX - event.clientX
-                : event.clientX - startX;
-            latestWidth = clampDockWidth(startWidth + delta);
-            setDockWidth(latestWidth);
-        };
-
-        const finish = () => {
-            document.body.classList.remove("gm-resizing-dock");
-            window.removeEventListener("mousemove", handleMove);
-            window.removeEventListener("mouseup", finish);
-            saveDockWidth(latestWidth);
-        };
-
-        window.addEventListener("mousemove", handleMove);
-        window.addEventListener("mouseup", finish, { once: true });
-    };
 
     const handleSearchSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -2645,6 +2448,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJumpCard}
                                     closeOnJump={!isDocked}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
+                                    cardSettings={cardSettings}
                                 />
                             )}
                             trailingCount={showSkeletons ? skeletonCount : 0}
@@ -2675,6 +2480,8 @@ export const GalleryView: React.FC<GalleryViewProps> = ({ onClose, initialQuery 
                                     onCloseGallery={onClose}
                                     onBeforeJump={handleBeforeJumpCard}
                                     closeOnJump={!isDocked}
+                                    previewsPaused={pausePreviewsWhileScrolling && isScrolling}
+                                    cardSettings={cardSettings}
                                 />
                             ))}
                             {showSkeletons && (

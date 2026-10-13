@@ -3,6 +3,7 @@ import { GallerySortOrder, MediaItem, SearchCacheEntry, SearchParameters } from 
 export interface GallerySessionState {
     mediaItems: MediaItem[];
     offset: number;
+    embedOffset?: number;
     totalResults: number;
     hasMore: boolean;
     scrollTop: number;
@@ -133,9 +134,15 @@ export class CacheService {
             items,
             totalResults,
             hasMore,
-            nextOffset: nextOffset ?? ((params.offset || 0) + items.length),
+            nextOffset: nextOffset ?? ((params.offset || 0) + (params.limit || 25)),
             nextEmbedOffset
         });
+    }
+
+    private static estimateCursorFromSlice(sliced: MediaItem[], currentCursor?: number): number {
+        const uniqueMessages = new Set(sliced.map(item => item.messageId).filter(Boolean)).size || sliced.length;
+        if (currentCursor === undefined || currentCursor < 0) return uniqueMessages;
+        return Math.min(currentCursor, uniqueMessages);
     }
 
     /**
@@ -158,22 +165,30 @@ export class CacheService {
         if (overCap && !scrolledIntoTail) {
             // Truncating the items alone would leave `offset` pointing past the end, so the next
             // "Load More" after a restore would skip everything in between. Reset the cursor to
-            // match the retained slice and mark it as having more to fetch.
+            // match the unique message count in the retained slice and mark it as having more to fetch.
+            const sliced = state.mediaItems.slice(0, this.MAX_SESSION_ITEMS);
+            const estimatedOffset = this.estimateCursorFromSlice(sliced, state.offset);
             trimmed = {
                 ...state,
-                mediaItems: state.mediaItems.slice(0, this.MAX_SESSION_ITEMS),
-                offset: this.MAX_SESSION_ITEMS,
+                mediaItems: sliced,
+                offset: estimatedOffset,
+                embedOffset: state.embedOffset !== undefined
+                    ? this.estimateCursorFromSlice(sliced, state.embedOffset)
+                    : undefined,
                 hasMore: true,
                 scrollTop: 0
             };
         } else if (overCap && state.mediaItems.length > this.MAX_SESSION_ITEMS_HARD) {
-            // Absolute ceiling so a very long browse still cannot grow without bound. Keep the
-            // most recent items (the ones nearest the user's position) rather than the oldest,
-            // and drop the scroll position honestly instead of pretending it still applies.
+            // Absolute ceiling so a very long browse still cannot grow without bound.
+            const sliced = state.mediaItems.slice(0, this.MAX_SESSION_ITEMS_HARD);
+            const estimatedOffset = this.estimateCursorFromSlice(sliced, state.offset);
             trimmed = {
                 ...state,
-                mediaItems: state.mediaItems.slice(0, this.MAX_SESSION_ITEMS_HARD),
-                offset: this.MAX_SESSION_ITEMS_HARD,
+                mediaItems: sliced,
+                offset: estimatedOffset,
+                embedOffset: state.embedOffset !== undefined
+                    ? this.estimateCursorFromSlice(sliced, state.embedOffset)
+                    : undefined,
                 hasMore: true,
                 scrollTop: 0
             };
@@ -261,5 +276,6 @@ export class CacheService {
     public static clearAll(): void {
         this.cache.clear();
         this.sessions.clear();
+        this.resumeSessionKey = null;
     }
 }
