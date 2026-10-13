@@ -86,13 +86,18 @@ function downscaledThumbUrl(url: string, size: number): string {
     }
 }
 
-const TOAST_SUCCESS = (Toasts as any)?.Type?.SUCCESS ?? "success";
-const TOAST_FAILURE = (Toasts as any)?.Type?.FAILURE ?? "failure";
+function getToastSuccess() {
+    return (Toasts as any)?.Type?.SUCCESS ?? "success";
+}
+
+function getToastFailure() {
+    return (Toasts as any)?.Type?.FAILURE ?? "failure";
+}
 
 function copyWithToast(text: string, toastMsg = "Copied to clipboard!") {
     void copyToClipboard(text)
-        .then(() => showToast(toastMsg, TOAST_SUCCESS))
-        .catch(() => showToast("Failed to copy", TOAST_FAILURE));
+        .then(() => showToast(toastMsg, getToastSuccess()))
+        .catch(() => showToast("Failed to copy", getToastFailure()));
 }
 
 async function downloadMedia(url: string, fallbackName: string) {
@@ -110,10 +115,10 @@ async function downloadMedia(url: string, fallbackName: string) {
         // Revoking immediately can abort the download before the browser has finished reading
         // the blob, which showed up as silently truncated files for larger media. Defer it.
         setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-        showToast("Downloaded media", TOAST_SUCCESS);
+        showToast("Downloaded media", getToastSuccess());
     } catch (err) {
         console.warn("[GalleryMode] Download failed:", err);
-        showToast("Download failed — open in browser to save", TOAST_FAILURE);
+        showToast("Download failed — open in browser to save", getToastFailure());
     }
 }
 
